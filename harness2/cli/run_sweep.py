@@ -120,7 +120,9 @@ def _print_stream(adapter, args, modes) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Parse, then run `_main`, printing a misconfiguration as one remediation line."""
-    args = _build_parser().parse_args(argv)
+    _p = _build_parser()
+    _p.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    args = _p.parse_args(argv)
     try:
         return _main(args)
     except (config.ConfigError, RuntimeError, ValueError, FileNotFoundError) as e:

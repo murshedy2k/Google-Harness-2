@@ -199,6 +199,7 @@ def main(argv=None) -> int:
         help="score this namespace's reference executions into base_judged.json "
         "instead of the selected runs",
     )
+    p.add_argument("--version", action="version", version="%(prog)s 0.1.0")
     args = p.parse_args(argv)
     try:
         return _main(args)

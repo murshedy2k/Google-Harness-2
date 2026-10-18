@@ -111,6 +111,7 @@ def main(argv=None) -> int:
         help="stream-order seed of the sweep; omit for the seedless namespace",
     )
     C.add_modes_arg(g)
+    p.add_argument("--version", action="version", version="%(prog)s 0.1.0")
     args = p.parse_args(argv)
     try:
         return _main(args)
