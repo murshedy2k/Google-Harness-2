@@ -516,7 +516,8 @@ def _call_fingerprint(
 
     The resolved path is part of the key: the two modes can have byte-identical k=1 evidence
     and must still be independent draws.
-    Channel settings isolate both cached replies and harvested harnesses across models.
+    Channel settings isolate both cached replies and harvested harnesses across channel
+    configurations.
     """
     h = hashlib.sha256()
     for value in (label, mission, system, json.dumps(asdict(spec), sort_keys=True)):
