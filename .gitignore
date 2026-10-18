@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+build/
+dist/
+runs/
+splits/
+
+# Downloaded runtimes and benchmark data; keep the release manifests.
+dependencies/*/
