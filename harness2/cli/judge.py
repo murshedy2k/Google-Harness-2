@@ -147,7 +147,47 @@ def judge_bases(adapter, ns_dir: Path) -> int:
     return 0 if graded == len(rows) else 2
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(args) -> int:
+    modes = C.parse_modes(args.modes)
+
+    config.validate_models(judge=True)
+    adapter = C.make_adapter(args.bench, args.subset, args.substrate)
+    ns = C.summary_namespace(adapter, args.k, seed=args.seed)
+    ns_dir = C.runs_root_for(adapter) / ns
+    identity = ns_dir / "config.json"
+    if identity.is_file() and json.loads(identity.read_text()).get("judge") != config.JUDGE_MODEL:
+        raise SystemExit("Judge model changed for this experiment; choose a new HARNESS2_RUNS_DIR")
+    if not ns_dir.is_dir():
+        raise SystemExit(
+            "nothing to judge: %s does not exist - has the sweep `%s` run on this machine?" % (ns_dir, ns)
+        )
+    if args.bases:
+        return judge_bases(adapter, ns_dir)
+
+    sels = collect_selections(ns_dir, modes)
+    if not sels:
+        raise SystemExit(
+            "nothing to judge: no selections for modes "
+            + str([C.mode_label(m) for m in modes]) + " under " + str(ns_dir)
+        )
+
+    print("judging %d selection(s) under %s ..." % (len(sels), ns), flush=True)
+    rows = J.judge_selections(adapter, sels, parallel=_PARALLEL)
+
+    out_path = ns_dir / "judged.json"
+    merged = _merge(_load_rows(out_path), rows)
+    J.write(merged, out_path)
+
+    graded = sum(1 for r in merged if r.graded)
+    print(
+        "judged.json: %d row(s), %d graded, %d ungraded (judge failure or no pick - NOT zeros)"
+        % (len(merged), graded, len(merged) - graded)
+    )
+    print("wrote " + str(out_path))
+    return 0 if rows and all(r.graded for r in rows) else 2
+
+
+def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="harness2.cli.judge", description=__doc__, formatter_class=C.HelpFormatter
     )
@@ -160,44 +200,11 @@ def main(argv: list[str] | None = None) -> int:
         "instead of the selected runs",
     )
     args = p.parse_args(argv)
-    modes = C.parse_modes(args.modes)
-
-    config.validate_models(judge=True)
-    adapter = C.make_adapter(args.bench, args.subset, args.substrate)
-    ns = C.summary_namespace(adapter, args.k, seed=args.seed)
-    ns_dir = C.runs_root_for(adapter) / ns
-    identity = ns_dir / "config.json"
-    if identity.is_file() and json.loads(identity.read_text()).get("judge") != config.JUDGE_MODEL:
-        raise SystemExit("Judge model changed for this experiment; choose a new HARNESS2_RUNS_DIR")
-    if not ns_dir.is_dir():
-        raise SystemExit(
-            f"nothing to judge: {ns_dir} does not exist — has the sweep `{ns}` run on this machine?"
-        )
-    if args.bases:
-        return judge_bases(adapter, ns_dir)
-
-    sels = collect_selections(ns_dir, modes)
-    if not sels:
-        raise SystemExit(
-            f"nothing to judge: no selections for modes "
-            f"{[C.mode_label(m) for m in modes]} under {ns_dir} (tasks may still "
-            f"be running, or the wrong --k/--seed was given)"
-        )
-
-    print(f"judging {len(sels)} selection(s) under {ns} ...", flush=True)
-    rows = J.judge_selections(adapter, sels, parallel=_PARALLEL)
-
-    out_path = ns_dir / "judged.json"
-    merged = _merge(_load_rows(out_path), rows)
-    J.write(merged, out_path)
-
-    graded = sum(1 for r in merged if r.graded)
-    print(
-        f"judged.json: {len(merged)} row(s), {graded} graded, "
-        f"{len(merged) - graded} ungraded (judge failure or no pick — NOT zeros)"
-    )
-    print(f"wrote {out_path}")
-    return 0 if rows and all(r.graded for r in rows) else 2
+    try:
+        return _main(args)
+    except (config.ConfigError, RuntimeError, ValueError, FileNotFoundError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

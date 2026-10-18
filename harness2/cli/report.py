@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Render the score report for one cell from cached judged.json rows — read-only.
+"""Render the score report for one cell from cached judged.json rows â€” read-only.
 
-The figure each benchmark reports per (mode, k) — partial credit and all-criteria pass on LAB,
-one score elsewhere — with pick provenance, the k=1 noise-floor note and the sanity warnings;
+The figure each benchmark reports per (mode, k) â€” partial credit and all-criteria pass on LAB,
+one score elsewhere â€” with pick provenance, the k=1 noise-floor note and the sanity warnings;
 fell-back counts and improver spend come from the task summaries.
 
     python3 -m harness2.cli.report --bench jb --substrate oc --k 1,2
@@ -28,6 +28,7 @@ import json
 import sys
 from pathlib import Path
 
+from .. import config
 from ..core import report as R
 from ..core import schedule as SCHED
 from . import _common as C
@@ -55,7 +56,48 @@ def _spend_and_fallbacks(ns_dir: Path, modes: tuple[str, ...], k: int) -> tuple[
     return fell_back, usd
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(args) -> int:
+    modes = C.parse_modes(args.modes)
+    try:
+        ks = sorted({int(s) for s in args.k.split(",") if s.strip()})
+    except ValueError:
+        raise SystemExit("k takes a comma list of ints, got %r" % args.k)
+    if not ks:
+        raise SystemExit("k named no scale")
+
+    adapter = C.make_adapter(args.bench, args.subset, args.substrate)
+    rows, fell_back, usd = [], {}, {}
+    for k in ks:
+        ns_dir = C.runs_root_for(adapter) / C.summary_namespace(adapter, k, seed=args.seed)
+        judged = ns_dir / "judged.json"
+        got = _load_rows(judged)
+        if not got:
+            print("  ! no judged rows at %s - run cli.judge for k=%s first" % (judged, k), flush=True)
+            continue
+        rows.extend(r for r in got if r.mode in modes)
+        fb, sp = _spend_and_fallbacks(ns_dir, modes, k)
+        fell_back.update(fb)
+        usd.update(sp)
+    if not rows:
+        raise SystemExit("nothing to report")
+
+    title = (
+        "%s-%s" % (adapter.spec.name, adapter.substrate.name)
+        + (" seed=%s" % args.seed if args.seed is not None else "")
+        + " modes=%s" % ",".join(C.mode_label(m) for m in modes)
+    )
+    summaries = R.summarise(rows, fell_back=fell_back, usd=usd)
+    print(R.render(summaries, title=title, bench=adapter.spec.name))
+    spend = sum(s.usd for s in summaries)
+    if spend:
+        print(
+            "\n  improver (editors, composer, selection, reflection) spend across reported modes: "
+            "$%.2f" % spend
+        )
+    return 0
+
+
+def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog="harness2.cli.report", description=__doc__, formatter_class=C.HelpFormatter
     )
@@ -70,44 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     C.add_modes_arg(g)
     args = p.parse_args(argv)
-    modes = C.parse_modes(args.modes)
     try:
-        ks = sorted({int(s) for s in args.k.split(",") if s.strip()})
-    except ValueError:
-        raise SystemExit(f"--k takes a comma list of ints, got {args.k!r}")
-    if not ks:
-        raise SystemExit("--k named no scale")
-
-    adapter = C.make_adapter(args.bench, args.subset, args.substrate)
-    rows, fell_back, usd = [], {}, {}
-    for k in ks:
-        ns_dir = C.runs_root_for(adapter) / C.summary_namespace(adapter, k, seed=args.seed)
-        judged = ns_dir / "judged.json"
-        got = _load_rows(judged)
-        if not got:
-            print(f"  ! no judged rows at {judged} — run cli.judge for k={k} first", flush=True)
-            continue
-        rows.extend(r for r in got if r.mode in modes)
-        fb, sp = _spend_and_fallbacks(ns_dir, modes, k)
-        fell_back.update(fb)
-        usd.update(sp)
-    if not rows:
-        raise SystemExit("nothing to report")
-
-    title = (
-        f"{adapter.spec.name}-{adapter.substrate.name}"
-        + (f" seed={args.seed}" if args.seed is not None else "")
-        + f" modes={','.join(C.mode_label(m) for m in modes)}"
-    )
-    summaries = R.summarise(rows, fell_back=fell_back, usd=usd)
-    print(R.render(summaries, title=title, bench=adapter.spec.name))
-    spend = sum(s.usd for s in summaries)
-    if spend:
-        print(
-            f"\n  improver (editors, composer, selection, reflection) spend across reported modes: "
-            f"${spend:.2f}"
-        )
-    return 0
+        return _main(args)
+    except (config.ConfigError, RuntimeError, ValueError, FileNotFoundError) as e:
+        print("error: %s" % e, file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
