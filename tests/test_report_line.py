@@ -39,6 +39,12 @@ class SummaryLineSpendTests(unittest.TestCase):
         s = report.Summary(mode="seq", k=1)
         self.assertNotIn("spend", s.line())
 
+    def test_line_shows_spend_with_lab_figures(self):
+        s = report.Summary(mode="agg", k=2, n=3, score=50.0, all_pass=25.0, usd=1.25)
+        line = s.line(bench="lab")
+        self.assertIn("partial  50.00% | pass  25.0%", line)
+        self.assertIn("spend $1.25", line)
+
     def test_summarise_spend_reaches_rendered_line(self):
         rows = [
             Scored(
