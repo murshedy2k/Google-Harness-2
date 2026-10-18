@@ -23,7 +23,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -41,15 +40,6 @@ SYSTEM_ARG_MAX = 120_000
 
 MAX_CONCURRENCY = int(config.PROPOSER_CONCURRENCY)
 _SEM = threading.BoundedSemaphore(MAX_CONCURRENCY) if MAX_CONCURRENCY > 0 else None
-
-
-_DROP_ENV = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_BEDROCK_BASE_URL",
-    "CLAUDE_CODE_USE_BEDROCK",
-)
 
 
 def _obj(d: dict, key: str) -> dict:
@@ -103,7 +93,7 @@ class Proposer:
             raise ValueError("Set HARNESS2_IMPROVER_MODEL before starting model sessions")
 
     def env(self) -> dict[str, str]:
-        e = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
+        e = config.scrub_env()
         if self.spec.kind == "claude_cli":
             e.update(
                 {
@@ -321,7 +311,9 @@ class Proposer:
             safe = f"{safe}.{cache_key}"
         dest = dest / f"{safe}.workspace"
         shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(src, dest)
+        def _ignore_symlinks(directory, contents):
+            return [name for name in contents if (Path(directory) / name).is_symlink()]
+        shutil.copytree(src, dest, ignore=_ignore_symlinks)
         return dest
 
     def _paths(self, label: str, cache_key: str = "") -> dict[str, Path] | None:

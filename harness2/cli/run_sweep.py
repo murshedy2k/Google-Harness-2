@@ -120,7 +120,9 @@ def _print_stream(adapter, args, modes) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Parse, then run `_main`, printing a misconfiguration as one remediation line."""
-    args = _build_parser().parse_args(argv)
+    _p = _build_parser()
+    _p.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    args = _p.parse_args(argv)
     try:
         return _main(args)
     except (config.ConfigError, RuntimeError, ValueError, FileNotFoundError) as e:
@@ -225,14 +227,22 @@ def _check_identity(adapter, args, namespace_dir: Path) -> None:
     }
     namespace_dir.mkdir(parents=True, exist_ok=True)
     path = namespace_dir / "config.json"
-    if path.is_file():
-        if json.loads(path.read_text()) != json.loads(json.dumps(identity)):
-            raise ValueError(
-                "This run directory belongs to different models or tasks. "
-                "Choose a new HARNESS2_RUNS_DIR for a new experiment."
-            )
-    else:
-        path.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+    # Independent mode processes share this namespace. Claim its identity under
+    # one lock before either process can start paid executor work.
+    import fcntl
+
+    with path.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.is_file():
+            if json.loads(path.read_text()) != json.loads(json.dumps(identity)):
+                raise ValueError(
+                    "This run directory belongs to different models or tasks. "
+                    "Choose a new HARNESS2_RUNS_DIR for a new experiment."
+                )
+        else:
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
 
 
 if __name__ == "__main__":
