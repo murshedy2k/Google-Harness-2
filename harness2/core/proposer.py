@@ -311,7 +311,9 @@ class Proposer:
             safe = f"{safe}.{cache_key}"
         dest = dest / f"{safe}.workspace"
         shutil.rmtree(dest, ignore_errors=True)
-        shutil.copytree(src, dest)
+        def _ignore_symlinks(directory, contents):
+            return [name for name in contents if (Path(directory) / name).is_symlink()]
+        shutil.copytree(src, dest, ignore=_ignore_symlinks)
         return dest
 
     def _paths(self, label: str, cache_key: str = "") -> dict[str, Path] | None:

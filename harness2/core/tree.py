@@ -135,7 +135,7 @@ def read_tree(surface: SurfaceSpec, d: Path | str, *, rejected: list[str] | None
         return out
     stubs = _stub_paths(surface)
     for p in sorted(d.rglob("*")):
-        if not p.is_file() or "__pycache__" in p.parts:
+        if p.is_symlink() or not p.is_file() or "__pycache__" in p.parts:
             continue
         rel = str(p.relative_to(d))
         if rel in stubs:
@@ -150,7 +150,9 @@ def read_tree(surface: SurfaceSpec, d: Path | str, *, rejected: list[str] | None
 
 def is_tree(surface: SurfaceSpec, d: Path | str) -> bool:
     d = Path(d)
-    return d.is_dir() and any((d / a).is_file() for a in surface.always_on)
+    return d.is_dir() and not d.is_symlink() and any(
+        (d / a).is_file() and not (d / a).is_symlink() for a in surface.always_on
+    )
 
 
 def write_tree(surface: SurfaceSpec, tree: Tree, dest: Path | str, *, stubs: bool = True) -> Path:
@@ -162,6 +164,9 @@ def write_tree(surface: SurfaceSpec, tree: Tree, dest: Path | str, *, stubs: boo
     dest.mkdir(parents=True, exist_ok=True)
     stub_set = _stub_paths(surface)
     for p in sorted(dest.rglob("*"), reverse=True):
+        if p.is_symlink():
+            p.unlink()
+            continue
         if not p.is_file():
             continue
         rel = str(p.relative_to(dest))
@@ -170,16 +175,22 @@ def write_tree(surface: SurfaceSpec, tree: Tree, dest: Path | str, *, stubs: boo
     for a in surface.always_on:
         p = dest / a
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.is_symlink():
+            p.unlink()
         if a not in tree and not p.exists():
             p.write_text("", encoding="utf-8")
     for rel, content in tree.items():
         p = dest / normalize_rel(rel)
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.is_symlink():
+            p.unlink()
         p.write_text(content, encoding="utf-8")
     if stubs:
         for rel, body in surface.stubs:
             p = dest / rel
             p.parent.mkdir(parents=True, exist_ok=True)
+            if p.is_symlink():
+                p.unlink()
             if not p.exists():
                 p.write_text(body, encoding="utf-8")
     return dest
