@@ -1,8 +1,86 @@
 diff --git a/eval/judge.py b/eval/judge.py
-index 8412969..1c83bb5 100755
+index 8412969..0ea2e84 100755
 --- a/eval/judge.py
 +++ b/eval/judge.py
-@@ -531,6 +531,15 @@ IMPORTANT:
+@@ -19,6 +19,7 @@ import fcntl
+ import json
+ import os
+ import re
++import subprocess
+ import tempfile
+ import time
+ import traceback
+@@ -424,6 +425,69 @@ def get_openai_client(api_base: str, api_key: str):
+     return OpenAI(base_url=api_base, api_key=api_key)
+ 
+ 
++def _claude_blocks(user_content) -> list[dict]:
++    """OpenAI chat content -> Anthropic content blocks; image_url data URLs become base64 images."""
++    if isinstance(user_content, str):
++        return [{"type": "text", "text": user_content}]
++    blocks = []
++    for part in user_content:
++        if part.get("type") == "image_url":
++            head, _, data = part["image_url"]["url"].partition(",")
++            mime = head.removeprefix("data:").removesuffix(";base64")
++            blocks.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}})
++        else:
++            blocks.append({"type": "text", "text": part.get("text", "")})
++    return blocks
++
++
++def call_claude_cli(judge_model: str, system: str, user_content, timeout_sec: int) -> str:
++    """JUDGE_BACKEND=claude_cli: one tool-less Claude Code session per rubric, prompt on stdin.
++
++    Claude Code takes its credentials from the environment (Vertex AI, ANTHROPIC_API_KEY or a
++    subscription CLAUDE_CODE_OAUTH_TOKEN). Temperature cannot be set; JUDGE_REASONING_EFFORT
++    maps to --effort. JUDGE_CLAUDE_CONFIG_ISOLATED=1 gives each call an empty config dir.
++    """
++    cmd = [
++        os.environ.get("JUDGE_CLAUDE_BIN") or "claude",
++        "-p",
++        "--input-format", "stream-json",
++        "--output-format", "stream-json",
++        "--verbose",
++        "--model", judge_model,
++        "--system-prompt", system,
++        "--tools", "",
++        "--strict-mcp-config",
++        "--setting-sources", "",
++        "--no-session-persistence",
++    ]
++    effort = os.environ.get("JUDGE_REASONING_EFFORT", "low").strip()
++    if effort and effort.lower() != "default":
++        cmd += ["--effort", effort]
++    message = {"type": "user", "message": {"role": "user", "content": _claude_blocks(user_content)}}
++    with tempfile.TemporaryDirectory(prefix="judge-claude-") as cwd:
++        env = dict(os.environ)
++        if env.get("JUDGE_CLAUDE_CONFIG_ISOLATED") == "1":
++            env["CLAUDE_CONFIG_DIR"] = os.path.join(cwd, ".config")
++        r = subprocess.run(
++            cmd, input=json.dumps(message) + "\n", cwd=cwd, env=env,
++            capture_output=True, text=True, timeout=timeout_sec,
++        )
++    result = None
++    for line in r.stdout.splitlines():
++        try:
++            event = json.loads(line)
++        except json.JSONDecodeError:
++            continue
++        if isinstance(event, dict) and event.get("type") == "result":
++            result = event
++    if result is None:
++        raise RuntimeError(f"claude exited {r.returncode} without a result: {(r.stderr or r.stdout)[-300:]}")
++    text = result.get("result") if isinstance(result.get("result"), str) else ""
++    if result.get("is_error") or not text.strip():
++        raise RuntimeError(f"claude judge error ({result.get('subtype')}): {text[:300]}")
++    return text
++
++
+ def parse_judge_json(content: str) -> tuple[dict, str]:
+     try:
+         return json.loads(content), "direct_json"
+@@ -531,23 +595,45 @@ IMPORTANT:
      last_error = None
      raw_response = ""
      parse_status = "failed"
@@ -15,28 +93,50 @@ index 8412969..1c83bb5 100755
 +        # via extra_body so it reaches the endpoint regardless of SDK version
 +        extra_kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
 +
++    system_prompt = "You are an evaluation judge. You must return valid JSON only, with no markdown formatting or extra text."
      for attempt in range(max_retries):
          try:
-             client = get_openai_client(api_base, api_key)
-@@ -543,11 +552,20 @@ IMPORTANT:
-                     },
-                     {"role": "user", "content": user_content},
-                 ],
+-            client = get_openai_client(api_base, api_key)
+-            response = client.chat.completions.create(
+-                model=judge_model,
+-                messages=[
+-                    {
+-                        "role": "system",
+-                        "content": "You are an evaluation judge. You must return valid JSON only, with no markdown formatting or extra text.",
+-                    },
+-                    {"role": "user", "content": user_content},
+-                ],
 -                max_completion_tokens=8192,
-+                # 64k so extended-thinking effort doesn't consume the whole budget and starve the
-+                # verdict output (thinking + verdict share this cap; 32k was too small at effort=high,
-+                # which silently zeroed rubrics on hard tasks).
-+                max_completion_tokens=int(os.environ.get("JUDGE_MAX_COMPLETION_TOKENS", "65536")),
-                 temperature=0.0,
-                 timeout=timeout_sec,
-+                **extra_kwargs,
-             )
+-                temperature=0.0,
+-                timeout=timeout_sec,
+-            )
 -            raw_response = response.choices[0].message.content.strip()
-+            message = response.choices[0].message if response.choices else None
-+            content = getattr(message, "content", None) if message else None
-+            if not content:
-+                finish = response.choices[0].finish_reason if response.choices else "unknown"
-+                raise ValueError(f"Judge returned empty content (finish_reason={finish})")
++            if os.environ.get("JUDGE_BACKEND") == "claude_cli":
++                content = call_claude_cli(judge_model, system_prompt, user_content, timeout_sec)
++            else:
++                client = get_openai_client(api_base, api_key)
++                response = client.chat.completions.create(
++                    model=judge_model,
++                    messages=[
++                        {
++                            "role": "system",
++                            "content": system_prompt,
++                        },
++                        {"role": "user", "content": user_content},
++                    ],
++                    # 64k so extended-thinking effort doesn't consume the whole budget and starve the
++                    # verdict output (thinking + verdict share this cap; 32k was too small at effort=high,
++                    # which silently zeroed rubrics on hard tasks).
++                    max_completion_tokens=int(os.environ.get("JUDGE_MAX_COMPLETION_TOKENS", "65536")),
++                    temperature=0.0,
++                    timeout=timeout_sec,
++                    **extra_kwargs,
++                )
++                message = response.choices[0].message if response.choices else None
++                content = getattr(message, "content", None) if message else None
++                if not content:
++                    finish = response.choices[0].finish_reason if response.choices else "unknown"
++                    raise ValueError(f"Judge returned empty content (finish_reason={finish})")
 +            raw_response = content.strip()
              parsed, parse_status = parse_judge_json(raw_response)
  

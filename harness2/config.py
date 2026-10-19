@@ -151,6 +151,11 @@ VERTEX_OPENAI_URL = (
 )
 JB_JUDGE_API_BASE = env("HARNESS2_JUDGE_BASE_URL", VERTEX_OPENAI_URL if VERTEX_PROJECT else "")
 JB_JUDGE_API_KEY = env("HARNESS2_JUDGE_API_KEY", "")
+# claude_cli grades each rubric in its own tool-less Claude Code session (auth from
+# HARNESS2_CLAUDE_AUTH) instead of calling an OpenAI-compatible endpoint.
+JB_JUDGE_BACKENDS = ("openai", "claude_cli")
+JB_JUDGE_BACKEND = env("HARNESS2_JUDGE_BACKEND", "openai")
+JB_JUDGE_WORKERS = env_int("HARNESS2_JUDGE_WORKERS", 2 if JB_JUDGE_BACKEND == "claude_cli" else 8)
 JB_JUDGE_REASONING_EFFORT = "low"
 JB_REPORTING_JUDGE_DETAILS = ""
 JB_OBS_TRUNC = 50000
@@ -162,6 +167,53 @@ CODEX_CONTAINER_URL = env("HARNESS2_CODEX_CONTAINER_URL", CODEX_BASE_URL)
 VERTEX_PROXY_KEY = env("HARNESS2_CODEX_API_KEY", "")
 CODEX_HOME_DIR = DEPENDENCIES / "codex" / "home"
 
+# Pinned from the npm "latest" channel; releases:
+# https://www.npmjs.com/package/@anthropic-ai/claude-code?activeTab=versions
+CLAUDE_VERSION = "2.1.302"
+CLAUDE_BIN = DEPENDENCIES / "claude" / "node_modules" / ".bin" / "claude"
+CLAUDE_MODEL = env("HARNESS2_CLAUDE_MODEL", "")
+# How Claude Code (the cc executor and the claude_cli proposer) authenticates:
+# vertex (default; Application Default Credentials and GOOGLE_CLOUD_PROJECT),
+# api_key (ANTHROPIC_API_KEY) or oauth (CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
+CLAUDE_AUTH_MODES = ("vertex", "api_key", "oauth")
+CLAUDE_AUTH = env("HARNESS2_CLAUDE_AUTH", "vertex")
+_CLAUDE_AUTH_SECRET = {"api_key": "ANTHROPIC_API_KEY", "oauth": "CLAUDE_CODE_OAUTH_TOKEN"}
+# The selected Claude credential leaves os.environ here, so no copied environment (OpenCode, Pi and
+# Codex executors, benchmark runners, judges) carries it; claude_auth_env() alone hands it on. An
+# ANTHROPIC_API_KEY is left alone unless api_key mode claims it: OpenCode's anthropic provider reads it.
+_CLAUDE_SECRETS = {
+    name: os.environ.pop(name, "")
+    for mode, name in _CLAUDE_AUTH_SECRET.items()
+    if mode == "oauth" or mode == CLAUDE_AUTH
+}
+
+
+def claude_auth_env() -> dict[str, str]:
+    """The env Claude Code needs for CLAUDE_AUTH; ConfigError when its credential is missing."""
+    if CLAUDE_AUTH not in CLAUDE_AUTH_MODES:
+        raise ConfigError(
+            f"HARNESS2_CLAUDE_AUTH={CLAUDE_AUTH!r}; use one of {', '.join(CLAUDE_AUTH_MODES)}"
+        )
+    if CLAUDE_AUTH == "vertex":
+        if not VERTEX_PROJECT:
+            raise ConfigError("Set GOOGLE_CLOUD_PROJECT for Claude Code on Vertex AI")
+        return {
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "ANTHROPIC_VERTEX_PROJECT_ID": VERTEX_PROJECT,
+            "CLOUD_ML_REGION": VERTEX_REGION,
+        }
+    name = _CLAUDE_AUTH_SECRET[CLAUDE_AUTH]
+    if _CLAUDE_SECRETS.get(name):
+        return {name: _CLAUDE_SECRETS[name]}
+    return {name: require(name, needed_by=f"HARNESS2_CLAUDE_AUTH={CLAUDE_AUTH}")}
+
+
+# Pinned from the npm "latest" channel; releases:
+# https://www.npmjs.com/package/@earendil-works/pi-coding-agent?activeTab=versions
+PI_VERSION = "1.3.0"
+PI_BIN = DEPENDENCIES / "pi" / "node_modules" / ".bin" / "pi"
+PI_MODEL = env("HARNESS2_PI_MODEL", SOLVER_MODEL_OC)  # same `provider/model` form as OpenCode
+
 WB_SOLVER_MODEL = "harness2/solver"
 WB_WEB_JUDGE = "harness2/judge"
 WB_RENDER_PY = sys.executable
@@ -171,14 +223,32 @@ WB_MAX_JOBS = {"oc": 1, "cx": 1}
 WB_MAX_TRIALS = {"oc": 2, "cx": 2}
 WB_MODEL_CONNECTION = "local_proxy"
 
-DEFAULT_PROPOSER_CHANNEL = "opencode"
-PROPOSER_MODEL_BY_CHANNEL = {"opencode": IMPROVER_MODEL, "claude_cli": IMPROVER_MODEL}
+# claude_cli runs the improver and selector in Claude Code (bare Anthropic model ID, auth from
+# HARNESS2_CLAUDE_AUTH); with --substrate cc it removes the OpenCode dependency altogether.
+DEFAULT_PROPOSER_CHANNEL = env("HARNESS2_PROPOSER_CHANNEL", "opencode")
+PROPOSER_MODEL_BY_CHANNEL = {
+    "opencode": IMPROVER_MODEL,
+    "claude_cli": env("HARNESS2_IMPROVER_MODEL", CLAUDE_MODEL),
+}
 PHASE_WIDTH = 2
 TRANSPORT_ATTEMPTS = 2
 PROPOSER_CONCURRENCY = 2
 
 
-def validate_models(*, judge: bool = False) -> None:
+def claude_only(substrate: str = "") -> bool:
+    """Claude Code executes and Claude Code improves: no OpenCode model is used."""
+    return substrate == "cc" and DEFAULT_PROPOSER_CHANNEL == "claude_cli"
+
+
+def validate_models(*, judge: bool = False, substrate: str = "") -> None:
+    if claude_only(substrate):
+        require("HARNESS2_CLAUDE_MODEL", needed_by="the Claude Code executor")
+        if "/" in PROPOSER_MODEL_BY_CHANNEL["claude_cli"]:
+            raise ConfigError("The claude_cli improver takes a bare Anthropic model ID")
+        claude_auth_env()
+        if judge:
+            require("HARNESS2_JUDGE_MODEL", needed_by="benchmark judging")
+        return
     require("HARNESS2_SOLVER_MODEL", needed_by="executor rollouts")
     if "/" not in SOLVER_MODEL_OC or "/" not in IMPROVER_MODEL:
         raise ConfigError("Executor and improver models must use OpenCode's provider/model syntax")

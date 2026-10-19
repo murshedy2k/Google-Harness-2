@@ -162,13 +162,18 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     modes = C.parse_modes(args.modes)
 
-    config.validate_models(judge=True)
+    config.validate_models(judge=True, substrate=args.substrate)
     adapter = C.make_adapter(args.bench, args.subset, args.substrate)
     ns = C.summary_namespace(adapter, args.k, seed=args.seed)
     ns_dir = C.runs_root_for(adapter) / ns
     identity = ns_dir / "config.json"
-    if identity.is_file() and json.loads(identity.read_text()).get("judge") != config.JUDGE_MODEL:
-        raise SystemExit("Judge model changed for this experiment; choose a new HARNESS2_RUNS_DIR")
+    if identity.is_file():
+        saved = json.loads(identity.read_text())
+        backend = config.JB_JUDGE_BACKEND if config.JB_JUDGE_BACKEND != "openai" else None
+        if saved.get("judge") != config.JUDGE_MODEL or saved.get("judge_backend") != backend:
+            raise SystemExit(
+                "Judge model or backend changed for this experiment; choose a new HARNESS2_RUNS_DIR"
+            )
     if not ns_dir.is_dir():
         raise SystemExit(
             f"nothing to judge: {ns_dir} does not exist — has the sweep `{ns}` run on this machine?"

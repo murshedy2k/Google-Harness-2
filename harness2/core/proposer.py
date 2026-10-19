@@ -49,6 +49,8 @@ _DROP_ENV = (
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_BEDROCK_BASE_URL",
     "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_OAUTH_TOKEN",
 )
 
 
@@ -105,14 +107,17 @@ class Proposer:
     def env(self) -> dict[str, str]:
         e = {k: v for k, v in os.environ.items() if k not in _DROP_ENV}
         if self.spec.kind == "claude_cli":
-            e.update(
-                {
-                    "CLAUDE_CODE_USE_VERTEX": "1",
-                    "ANTHROPIC_VERTEX_PROJECT_ID": self.project,
-                    "CLOUD_ML_REGION": self.region,
-                    "ANTHROPIC_MODEL": self.spec.model,
-                }
-            )
+            if config.CLAUDE_AUTH == "vertex":
+                e.update(
+                    {
+                        "CLAUDE_CODE_USE_VERTEX": "1",
+                        "ANTHROPIC_VERTEX_PROJECT_ID": self.project,
+                        "CLOUD_ML_REGION": self.region,
+                    }
+                )
+            else:
+                e.update(config.claude_auth_env())
+            e["ANTHROPIC_MODEL"] = self.spec.model
         else:
             e.update(
                 {
@@ -210,7 +215,13 @@ class Proposer:
     def _claude_cli(
         self, cwd: Path, mission: str, system: str, wall: int
     ) -> tuple[str, float, str]:
-        cli = shutil.which("claude") or "claude"
+        cli = (
+            str(config.CLAUDE_BIN)
+            if config.CLAUDE_BIN.is_file()
+            else shutil.which("claude") or "claude"
+        )
+        # The host's ~/.claude (global CLAUDE.md, hooks, MCP servers, memory) never reaches
+        # the improver: settings come from nowhere and the config dir is thrown away.
         cmd = [
             cli,
             "--dangerously-skip-permissions",
@@ -219,6 +230,10 @@ class Proposer:
             "json",
             "--effort",
             self.spec.effort,
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--no-session-persistence",
         ]
         stdin = mission
         if system:
@@ -230,16 +245,18 @@ class Proposer:
                 ]
             else:
                 cmd += ["--append-system-prompt", system]
-        p = subprocess.run(
-            cmd,
-            input=stdin,
-            cwd=cwd,
-            env=self.env(),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=wall,
-        )
+        with tempfile.TemporaryDirectory(prefix="proposer-claude-") as config_dir:
+            env = {**self.env(), "CLAUDE_CONFIG_DIR": config_dir}
+            p = subprocess.run(
+                cmd,
+                input=stdin,
+                cwd=cwd,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=wall,
+            )
         payload = _parse_json(p.stdout)
         text = str(payload.get("result") or payload.get("text") or "")
         err = ""

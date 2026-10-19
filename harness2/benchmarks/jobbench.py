@@ -39,14 +39,20 @@ from ..core import tree as HT
 from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
 from ..install import codex_config_error
 from ..substrate.base import Install, RunRequest
+from ..substrate.claude import _HOST_ENV_PREFIXES as _CLAUDE_HOST_ENV
+from ..substrate.claude import ClaudeSubstrate
 from ..substrate.codex import CodexSubstrate
 from ..substrate.opencode import OUTPUT_TOKEN_MAX, OpencodeSubstrate
+from ..substrate.pi import PiSubstrate
 from .tasks import discover, select
 
 _RUNNER_DIR = config.THIRD_PARTY / "jb_runner"
 _STORE_SEED_LOCK = threading.Lock()
+_BASE_LOCK = threading.Lock()
+_BASE_DONE: set[Path] = set()
 
 OC_RUNNER = Path(__file__).resolve().parent / "jb_opencode_runner.py"
+CLI_RUNNER = Path(__file__).resolve().parent / "jb_cli_runner.py"
 CX_RUNNER = _RUNNER_DIR / "run_benchmark_codex_cli_adapt.sh"
 OC_BASE_HARNESS = _RUNNER_DIR / "harness_baseline_oc"
 CX_BASE_HARNESS = _RUNNER_DIR / "codex_base_harness"
@@ -494,9 +500,14 @@ def render_opencode_tree(staged: Path, render_dir: Path, ctx: dict) -> None:
             shutil.copy(p, rd / ".opencode" / "plugin" / p.name)
 
 
-_INSTALL_MODE = {"oc": "workspace_agents_md", "cx": "codex_root"}
+_INSTALL_MODE = {
+    "oc": "workspace_agents_md",
+    "cx": "codex_root",
+    "cc": "claude_root",
+    "pi": "pi_root",
+}
 
-_DEFAULT_TIMEOUT = {"oc": 2400, "cx": 3600}
+_DEFAULT_TIMEOUT = {"oc": 2400, "cx": 3600, "cc": 3600, "pi": 3600}
 
 
 def _channels() -> dict:
@@ -507,7 +518,9 @@ def _channels() -> dict:
 
 def make_spec(substrate: str) -> BenchSpec:
     if substrate not in _INSTALL_MODE:
-        raise ValueError(f"JobBench substrate must be 'oc' or 'cx', got {substrate!r}")
+        raise ValueError(
+            f"JobBench substrate must be one of {tuple(_INSTALL_MODE)}, got {substrate!r}"
+        )
     return BenchSpec(
         name="jb",
         runs_root=config.RUNS / "jb",
@@ -516,7 +529,7 @@ def make_spec(substrate: str) -> BenchSpec:
         channels=_channels(),
         domain_word="profession",
         leak_globs=("RUBRICS.json", "eval_result/**", "expected/**", "reference/**"),
-        allow_subagents=(substrate == "oc"),
+        allow_subagents=(substrate in ("oc", "cc")),
         obs_trunc=config.JB_OBS_TRUNC,
         proposer_deliverables="contents",
     )
@@ -632,12 +645,13 @@ class JobBenchAdapter:
     ):
         self.split_file = split_file
         self.spec = make_spec(substrate)
-        launcher = self._launch_opencode if substrate == "oc" else self._launch_codex
-        self.substrate = (
-            OpencodeSubstrate(launcher=launcher)
-            if substrate == "oc"
-            else CodexSubstrate(launcher=launcher)
-        )
+        cls, launcher = {
+            "oc": (OpencodeSubstrate, self._launch_opencode),
+            "cx": (CodexSubstrate, self._launch_codex),
+            "cc": (ClaudeSubstrate, self._launch_cli),
+            "pi": (PiSubstrate, self._launch_cli),
+        }[substrate]
+        self.substrate = cls(launcher=launcher)
         self.timeout = int(timeout or _DEFAULT_TIMEOUT[substrate])
         self.store = Path(store_root) if store_root else config.RUNS / "jb" / "dataset"
 
@@ -829,6 +843,23 @@ class JobBenchAdapter:
         self._run_runner(CX_RUNNER, env, wall=t + 600, label=label)
         return [self._require_artifacts(task_id, label)]
 
+    def _launch_cli(self, req: RunRequest, install: Install) -> list[Path]:
+        """Claude Code and Pi: one runner; the substrate owns the CLI's argv and env."""
+        task_id, label, t = self._launch_common(req)
+        self.substrate.preflight()
+        env = {
+            **os.environ,
+            "JB_AGENT": self.substrate.name,
+            "TASK_IDS": task_id,
+            "LABEL": label,
+            "HARNESS_RENDER_DIR": str(install.staging_dir),
+            "TASKS_BASE_DIR": str(self.store),
+            "TIMEOUT_PER_TASK": str(t),
+            "MAX_RETRIES": "2",
+        }
+        self._run_runner(CLI_RUNNER, env, wall=2 * t + 600, label=label)
+        return [self._require_artifacts(task_id, label)]
+
     def _run_runner(self, runner: Path, env: dict, *, wall: int, label: str) -> None:
         """Run the packaged launcher; timeouts leave the rollout incomplete."""
         if not runner.is_file():
@@ -948,8 +979,19 @@ class JobBenchAdapter:
         return str(self._extract(d)["flat"]) if d.is_dir() else ""
 
     def base_harness(self) -> Path:
-        base = OC_BASE_HARNESS if self.substrate.name == "oc" else CX_BASE_HARNESS
-        if not HT.is_tree(self.substrate.surface(), base):
+        name, surface = self.substrate.name, self.substrate.surface()
+        if name in ("cc", "pi"):
+            # Written once per process, like LAB's: rollout threads share the path.
+            base = self.spec.runs_root / f"_base_harness_{name}_{os.getpid()}"
+            with _BASE_LOCK:
+                if base not in _BASE_DONE:
+                    # The codex base text, so the plain-CLI cells start from one instruction.
+                    body = (CX_BASE_HARNESS / "AGENTS.md").read_text(encoding="utf-8")
+                    HT.write_tree(surface, {surface.always_on[0]: body}, base)
+                    _BASE_DONE.add(base)
+        else:
+            base = OC_BASE_HARNESS if name == "oc" else CX_BASE_HARNESS
+        if not HT.is_tree(surface, base):
             raise FileNotFoundError(
                 f"JobBench base harness missing or not a {self.substrate.surface().name} "
                 f"tree: {base} — restore third_party/jb_runner/; an absent base would make "
@@ -998,7 +1040,7 @@ class JobBenchAdapter:
                 f"python-docx): {r.stderr.strip()[-300:]} -- {remedy}. Without them the judge "
                 f"grades '[ERROR: ... not available]' text as a real zero."
             )
-        if not config.JB_JUDGE_API_BASE:
+        if not config.JB_JUDGE_API_BASE and config.JB_JUDGE_BACKEND != "claude_cli":
             print(
                 "  [jb] WARNING: HARNESS2_JUDGE_BASE_URL is empty; rollouts will run "
                 "but judging refuses until it is set (see .env.example)",
@@ -1067,6 +1109,38 @@ class JobBenchAdapter:
             "no_output": True,
         }
 
+    @staticmethod
+    def _judge_token() -> str:
+        """HARNESS2_JUDGE_API_KEY, else a Vertex access token from gcloud; "" when neither."""
+        if config.JB_JUDGE_API_KEY:
+            return config.JB_JUDGE_API_KEY
+        try:
+            return subprocess.run(
+                ["gcloud", "auth", "application-default", "print-access-token"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            ).stdout.strip()
+        except (subprocess.SubprocessError, OSError):
+            return ""
+
+    @staticmethod
+    def _claude_judge_env(base_env: dict[str, str]) -> dict[str, str]:
+        """The claude_cli judge env: only HARNESS2_CLAUDE_AUTH's credential, a fresh config per call."""
+        env = {k: v for k, v in base_env.items() if not k.startswith(_CLAUDE_HOST_ENV)}
+        env.update(config.claude_auth_env())
+        env.update(
+            {
+                "JUDGE_BACKEND": "claude_cli",
+                "JUDGE_CLAUDE_BIN": str(config.CLAUDE_BIN),
+                "JUDGE_CLAUDE_CONFIG_ISOLATED": "1",
+                "DISABLE_UPDATES": "1",
+                "DISABLE_TELEMETRY": "1",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            }
+        )
+        return env
+
     def _run_judge(self, task_id: str, label: str, run_dir: Path) -> bool:
         """Invoke the upstream judge CLI in a subprocess; False on any failure."""
         judge_py = config.jb_repo() / "eval" / "judge.py"
@@ -1085,24 +1159,16 @@ class JobBenchAdapter:
             )
             return False
         api_base = config.JB_JUDGE_API_BASE
-        try:
-            token = (
-                config.JB_JUDGE_API_KEY
-                or subprocess.run(
-                    ["gcloud", "auth", "application-default", "print-access-token"],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                ).stdout.strip()
-            )
-        except (subprocess.SubprocessError, OSError):
-            token = ""
-        if not token:
-            print(
-                "  [jb] no Vertex access token (gcloud auth print-access-token); judge not run",
-                flush=True,
-            )
-            return False
+        if config.JB_JUDGE_BACKEND == "claude_cli":
+            api_base, token = "claude-cli", ""
+        else:
+            token = self._judge_token()
+            if not token:
+                print(
+                    "  [jb] no Vertex access token (gcloud auth print-access-token); judge not run",
+                    flush=True,
+                )
+                return False
         _reporting, own = self._details_candidates(task_id, label)
         own.parent.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -1119,7 +1185,7 @@ class JobBenchAdapter:
             "--api-base",
             api_base,
             "--max-workers",
-            "8",
+            str(config.JB_JUDGE_WORKERS),
             "--max-retries",
             "3",
             "--timeout-per-rubric",
@@ -1133,6 +1199,8 @@ class JobBenchAdapter:
             "JUDGE_REASONING_EFFORT": config.JB_JUDGE_REASONING_EFFORT,
             "VERTEXAI_LOCATION": config.VERTEX_REGION,
         }
+        if config.JB_JUDGE_BACKEND == "claude_cli":
+            env = self._claude_judge_env(env)
         try:
             r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=1800)
         except (subprocess.SubprocessError, OSError) as exc:

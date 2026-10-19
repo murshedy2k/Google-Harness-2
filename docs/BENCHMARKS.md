@@ -3,7 +3,9 @@
 Complete the [installation and credentials](SETUP.md) first. Each
 benchmark installs separately; install the ones you intend to run. Every command
 below takes `--substrate cx` to use the
-[Codex executor](SETUP.md#codex-executor) instead of OpenCode. Choose the
+[Codex executor](SETUP.md#codex-executor) instead of OpenCode; JobBench also takes
+`--substrate cc` or `--substrate pi` for
+[Claude Code or Pi](SETUP.md#claude-code-and-pi-executors). Choose the
 recursion mode with `--mode parallel` or `--mode sequential` and the task-level
 recursion budget with `--k`. Keep both identical across the run, judge, and
 report commands.
@@ -59,12 +61,19 @@ Setup downloads only the main dataset from Hugging Face — public and ungated, 
 no account, token, or terms acceptance is required — records its revision, and
 places tasks at `dependencies/job-bench-eval/dataset/main/`. It also installs the
 document extraction dependencies and a judge patch that handles reasoning effort
-and empty completions. Rubrics stay outside the improver's evidence.
+and empty completions, and adds the `claude_cli` judge backend. Rubrics stay
+outside the improver's evidence.
 
 With a Gemini `HARNESS2_JUDGE_MODEL`, the judge uses the project's Vertex
 OpenAI-compatible endpoint and Application Default Credentials. For a separate
 judge provider, set `HARNESS2_JUDGE_BASE_URL`, `HARNESS2_JUDGE_API_KEY`, and the
-model ID that endpoint accepts. The reported score uses the upstream rubric
+model ID that endpoint accepts. With `HARNESS2_JUDGE_BACKEND=claude_cli`, each
+rubric is graded in its own Claude Code session with no tools, using the same
+prompt and parser and the credential `HARNESS2_CLAUDE_AUTH` selects; set
+`HARNESS2_JUDGE_MODEL` to a bare Claude model ID. Temperature cannot be set on
+this backend, so repeated grading can differ slightly. `HARNESS2_JUDGE_WORKERS`
+sets the parallel sessions (2 by default for this backend, 8 otherwise); on a
+Claude subscription each rubric counts against its usage limits. The reported score uses the upstream rubric
 weights; unscored tasks are reported separately. Results are under `runs/jb/`.
 
 Note: JobBench data, including `RUBRICS.json`, is public on Hugging Face, so an
