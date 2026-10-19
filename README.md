@@ -88,10 +88,14 @@ uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install -e '.[render]'
 harness2-demo --output runs/demo --k 2
+harness2-dashboard --run runs/demo --open
 ```
 
 The local demo runs both recursion modes with deterministic editors and real
-Python executions. It requires no model credentials.
+Python executions. It requires no model credentials. The dashboard command
+renders a self-contained HTML view of any run directory — rollouts, answered
+totals, selection candidates, and the adopted experience library — with no
+extra dependencies and no JavaScript.
 
 For model-backed benchmarks, install **Node.js 20+, the Google Cloud CLI**, and
 the [benchmark dependencies](docs/SETUP.md#requirements). LAB needs Pandoc and
