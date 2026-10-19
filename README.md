@@ -105,6 +105,9 @@ gcloud auth application-default login
 
 See the [setup guide](docs/SETUP.md) for model settings, authentication
 alternatives, and the [Codex executor](docs/SETUP.md#codex-executor).
+Native Codex runs can also reuse an existing
+[ChatGPT login](docs/SETUP.md#saved-chatgpt-login-for-native-runs), with an
+optional `codex_cli` improvement channel and an opt-in model-backed local demo.
 
 ## Run a benchmark
 

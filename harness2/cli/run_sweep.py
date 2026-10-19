@@ -223,6 +223,10 @@ def _check_identity(adapter, args, namespace_dir: Path) -> None:
         "domains": sorted(_csv(args.only_domains)),
         "seed": args.seed,
     }
+    if args.substrate == "cx" and config.CODEX_AUTH_MODE != "api":
+        identity["codex_auth_mode"] = config.CODEX_AUTH_MODE
+    if config.DEFAULT_PROPOSER_CHANNEL != "opencode":
+        identity["improver_channel"] = config.DEFAULT_PROPOSER_CHANNEL
     namespace_dir.mkdir(parents=True, exist_ok=True)
     path = namespace_dir / "config.json"
     if path.is_file():
