@@ -224,6 +224,45 @@ class WorkflowTests(unittest.TestCase):
         self.adapter.score.assert_not_called()
         self.assertEqual((rows[0].graded, rows[0].n_passed), (False, None))
 
+    def test_failed_rerun_clears_stale_selections_in_summary(self):
+        self.run_stream(k=1)
+        summary_path = self.adapter.spec.runs_root / "demo-oc-agg1/ledger-1/summary.json"
+        initial = json.loads(summary_path.read_text())
+        self.assertTrue(initial["selections"]["agg"]["ok"])
+        self.assertTrue(initial["selections"]["seq"]["ok"])
+
+        (Path(initial["selections"]["agg"]["chosen_run_dir"]) / "answer.txt").unlink()
+        with patch(
+            "harness2.core.recursion.run_mode",
+            side_effect=RuntimeError("recursion failed on rerun"),
+        ):
+            failed_mode = self.run_stream(k=1)
+        self.assertEqual([row["status"] for row in failed_mode["tasks"]], ["partial", "skipped"])
+        after_mode_err = json.loads(summary_path.read_text())
+        for mode in ("agg", "seq"):
+            self.assertFalse(after_mode_err["modes"][mode]["ok"])
+            self.assertFalse(after_mode_err["selections"][mode]["ok"])
+            self.assertEqual(after_mode_err["selections"][mode]["chosen_label"], "")
+        self.adapter.score = Mock(return_value={"n_passed": 1, "n_criteria": 1})
+        rows = judge.judge_selections(self.adapter, list(after_mode_err["selections"].values()))
+        self.adapter.score.assert_not_called()
+        self.assertTrue(all(not r.graded for r in rows))
+
+        repaired = self.run_stream(k=1)
+        self.assertEqual([row["status"] for row in repaired["tasks"]], ["ok", "skipped"])
+        restored = json.loads(summary_path.read_text())
+        (Path(restored["selections"]["agg"]["chosen_run_dir"]) / "answer.txt").unlink()
+        with patch.object(self.adapter, "execute", side_effect=RuntimeError("executor down")):
+            failed_base = self.run_stream(k=1)
+        self.assertEqual(
+            [row["status"] for row in failed_base["tasks"]], ["base-failed", "skipped"]
+        )
+        after_base_err = json.loads(summary_path.read_text())
+        self.assertEqual(after_base_err["status"], "base-failed")
+        for mode in ("agg", "seq"):
+            self.assertFalse(after_base_err["modes"][mode]["ok"])
+            self.assertFalse(after_base_err["selections"][mode]["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

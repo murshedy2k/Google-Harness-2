@@ -627,8 +627,14 @@ def run_task(
 
     res.base = [{"label": b.label, "run_id": b.run_id, "run_dir": str(b.run_dir)} for b in base]
     if not any(b.ok for b in base):
+        err = "no base rollout produced anything"
         res.status = "base-failed"
-        res.errors.append("no base rollout produced anything")
+        res.errors.append(err)
+        for mode in modes:
+            res.modes[mode] = {"ok": False, "error": err}
+            res.selections[mode] = selection.Selection(
+                task_id=task_id, mode=mode, k=k, error=err
+            ).to_dict()
         _write_summary(summary_path, res)
         return res
 
@@ -652,12 +658,16 @@ def run_task(
                 res=res,
             )
         except Exception as exc:
+            err = f"{type(exc).__name__}: {exc}"
             res.modes[mode] = {
                 "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": err,
                 "traceback": traceback.format_exc()[-1500:],
             }
-            res.errors.append(f"{mode}: {type(exc).__name__}: {exc}")
+            res.selections[mode] = selection.Selection(
+                task_id=task_id, mode=mode, k=k, error=err
+            ).to_dict()
+            res.errors.append(f"{mode}: {err}")
         res.status = "partial"
         _write_summary(summary_path, res)
 
