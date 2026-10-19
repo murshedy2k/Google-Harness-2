@@ -52,8 +52,8 @@ def check(adapter, *, judge=False) -> list[str]:
     ]
     if need_opencode:
         checks.append(OpencodeSubstrate().preflight)
-    if config.DEFAULT_PROPOSER_CHANNEL == "codex_cli" and adapter.substrate.name != "cx":
-        checks.append(CodexSubstrate().preflight)
+    if config.DEFAULT_PROPOSER_CHANNEL == "codex_cli":
+        checks.append(lambda: CodexSubstrate().preflight(require_config=True))
     for validate in checks:
         try:
             validate()

@@ -117,12 +117,71 @@ class CodexLoginTests(unittest.TestCase):
         ):
             self.substrate.preflight()
 
+    def test_api_improvement_rejects_a_stale_generated_provider_before_running(self):
+        (self.root / "codex").touch()
+        (self.root / "config.toml").write_text(
+            f"model = {json.dumps(config.SOLVER_MODEL_CX)}\n"
+            'model_provider = "harness2"\n'
+            '[model_providers.harness2]\nbase_url = "https://old.example/v1"\n'
+        )
+        with (
+            patch.object(config, "CODEX_AUTH_MODE", "api"),
+            patch.object(config, "CODEX_DIST", self.root),
+            patch.object(config, "CODEX_HOME_DIR", self.root),
+            patch.object(config, "CODEX_BASE_URL", "https://new.example/v1"),
+            patch.object(config, "require"),
+            patch("socket.create_connection") as connect,
+            patch("subprocess.run", return_value=Mock(
+                returncode=0, stdout="", stderr=""
+            )) as run,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                self.substrate.preflight(require_config=True)
+            with self.assertRaisesRegex(RuntimeError, "stale"):
+                self.substrate.run_session(
+                    "work", self.root, "test-model", self.root / "output", timeout=1,
+                )
+        connect.assert_not_called()
+        run.assert_not_called()
+
+    def test_api_improvement_uses_the_configured_provider_with_its_own_model(self):
+        (self.root / "codex").touch()
+
+        def execute(argv, **kwargs):
+            self.assertEqual(argv[argv.index("--model") + 1], "improver-model")
+            self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+            self.assertEqual(kwargs["env"]["CODEX_HOME"], str(self.root))
+            self.assertEqual(kwargs["env"]["VERTEX_PROXY_KEY"], "sentinel")
+            Path(argv[argv.index("--output-last-message") + 1]).write_text("done")
+            return Mock(returncode=0, stdout='{"type":"turn.completed"}', stderr="")
+
+        with (
+            patch.object(config, "CODEX_AUTH_MODE", "api"),
+            patch.object(config, "CODEX_DIST", self.root),
+            patch.object(config, "CODEX_HOME_DIR", self.root),
+            patch.object(config, "CODEX_BASE_URL", "https://configured.example/v1"),
+            patch.object(config, "VERTEX_PROXY_KEY", "sentinel"),
+            patch.object(config, "require"),
+            patch("socket.create_connection"),
+            patch("subprocess.run", side_effect=execute) as run,
+        ):
+            install.configure_codex()
+            self.substrate.preflight(require_config=True)
+            result = self.substrate.run_session(
+                "work", self.root, "improver-model", self.root / "output", timeout=1,
+            )
+        self.assertEqual(result, "done")
+        run.assert_called_once()
+
 
 class CodexProposerTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        mode = patch.object(config, "CODEX_AUTH_MODE", "chatgpt")
+        mode.start()
+        self.addCleanup(mode.stop)
 
     def make_proposer(self):
         return Proposer(ChannelSpec("codex_cli", "test-model"), audit_dir=self.root / "audit")
@@ -249,6 +308,23 @@ class CodexConfigurationTests(unittest.TestCase):
             ):
                 run_sweep._check_identity(Mock(), args, root)
                 with patch.object(config, "CODEX_AUTH_MODE", "api"), self.assertRaises(ValueError):
+                    run_sweep._check_identity(Mock(), args, root)
+
+    def test_api_endpoint_change_invalidates_an_opencode_run_with_codex_improvement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = run_sweep._build_parser().parse_args(["--bench", "lab", "--substrate", "oc"])
+            with (
+                patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "codex_cli"),
+                patch.object(config, "CODEX_AUTH_MODE", "api"),
+                patch.object(config, "CODEX_BASE_URL", "https://old.example/v1"),
+                patch("harness2.cli.run_sweep._stream_for", return_value=({}, [])),
+            ):
+                run_sweep._check_identity(Mock(), args, root)
+                with (
+                    patch.object(config, "CODEX_BASE_URL", "https://new.example/v1"),
+                    self.assertRaises(ValueError),
+                ):
                     run_sweep._check_identity(Mock(), args, root)
 
     def test_offline_and_live_demos_cannot_share_artifact_directories(self):

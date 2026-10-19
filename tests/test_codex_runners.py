@@ -79,11 +79,28 @@ class NativeRunnerTests(unittest.TestCase):
             patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "codex_cli"),
             patch.object(config, "validate_models"),
             patch("harness2.preflight.OpencodeSubstrate.preflight") as opencode,
-            patch("subprocess.run", return_value=Mock(returncode=0)),
+            patch("subprocess.run", return_value=Mock(
+                returncode=0, stdout="Logged in using ChatGPT", stderr=""
+            )),
         ):
             errors = check(adapter)
         opencode.assert_not_called()
         self.assertFalse(any("OpenCode" in error or "opencode" in error for error in errors))
+
+    def test_codex_improvement_checks_its_generated_provider_with_any_executor(self):
+        adapter = Mock()
+        adapter.spec.name = "lab"
+        for executor in ("oc", "cx"):
+            adapter.substrate.name = executor
+            with (
+                patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "codex_cli"),
+                patch.object(config, "validate_models"),
+                patch("harness2.preflight.OpencodeSubstrate.preflight"),
+                patch("harness2.preflight.CodexSubstrate.preflight") as codex,
+                patch("subprocess.run", return_value=Mock(returncode=0)),
+            ):
+                check(adapter)
+            codex.assert_called_once_with(require_config=True)
 
     def test_account_setup_does_not_download_unused_opencode_or_codex(self):
         with (

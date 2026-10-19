@@ -231,6 +231,11 @@ class CodexSubstrate:
         timeout: int, reasoning_effort: str = "high", base_env: Mapping[str, str] | None = None,
     ) -> str:
         """Capture one native session, accepting only a completed turn with a final answer."""
+        if config.CODEX_AUTH_MODE == "api":
+            from ..install import codex_config_error
+
+            if stale := codex_config_error():
+                raise RuntimeError(stale)
         output.mkdir(parents=True, exist_ok=True)
         answer = output / "answer.md"
         answer.unlink(missing_ok=True)
@@ -284,7 +289,10 @@ class CodexSubstrate:
             Path(stream_path), obs_trunc=obs_trunc, max_chars=max_chars, args_trunc=args_trunc
         )
 
-    def preflight(self, *, require_dist: bool = False, require_bridge: bool = False) -> None:
+    def preflight(
+        self, *, require_dist: bool = False, require_bridge: bool = False,
+        require_config: bool = False,
+    ) -> None:
         """Check the CLI and Responses endpoint, including container configuration."""
         from urllib.parse import urlparse
 
@@ -329,6 +337,11 @@ class CodexSubstrate:
             raise RuntimeError(
                 "Set HARNESS2_CODEX_CONTAINER_URL to a container-accessible Responses endpoint"
             )
+        if require_config:
+            from ..install import codex_config_error
+
+            if stale := codex_config_error():
+                raise RuntimeError(stale)
         with socket.create_connection(
             (url.hostname, url.port or (443 if url.scheme == "https" else 80)), timeout=5
         ):
