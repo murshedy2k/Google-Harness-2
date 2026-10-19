@@ -30,6 +30,8 @@ def check(adapter, *, judge=False) -> list[str]:
     if missing:
         return [missing]
     errors = []
+    substrate = getattr(getattr(adapter, "substrate", None), "name", "")
+    claude_only = config.claude_only(substrate)
 
     def probe(label, cmd, *, cwd=None, remedy="run harness2-setup for this benchmark"):
         try:
@@ -44,9 +46,9 @@ def check(adapter, *, judge=False) -> list[str]:
             return False
 
     for validate in (
-        lambda: config.validate_models(judge=judge),
+        lambda: config.validate_models(judge=judge, substrate=substrate),
         adapter.tasks,
-        OpencodeSubstrate().preflight,
+        *(() if claude_only else (OpencodeSubstrate().preflight,)),
         adapter.preflight,
     ):
         try:
@@ -57,7 +59,7 @@ def check(adapter, *, judge=False) -> list[str]:
     bench = adapter.spec.name.split("-", 1)[0]
     name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench"}[bench]
     repo = config.DEPENDENCIES / name
-    for dependency in (name, "opencode"):
+    for dependency in (name,) if claude_only else (name, "opencode"):
         target = config.DEPENDENCIES / dependency
         if (target / ".git").exists():
             try:
@@ -73,7 +75,7 @@ def check(adapter, *, judge=False) -> list[str]:
             f"{dependency} patch",
             ["git", "-C", target, "apply", "--reverse", "--check", patch],
         )
-    if not (config.OPENCODE_DIR / "node_modules").is_dir():
+    if not claude_only and not (config.OPENCODE_DIR / "node_modules").is_dir():
         errors.append(f"OpenCode dependencies missing; run harness2-setup {bench}")
 
     if any(

@@ -1,7 +1,8 @@
 # Setup guide
 
 Start with the [quick start](../README.md#install). This guide covers benchmark
-dependencies, model credentials, and the optional Codex executor. For individual
+dependencies, model credentials, and the optional Codex, Claude Code, and Pi
+executors. For individual
 benchmarks, see the [benchmark guides](BENCHMARKS.md).
 
 ## Requirements
@@ -140,6 +141,42 @@ changing either. `harness2-check` reports stale configuration until then.
 Codex runs with its sandbox disabled. Review the
 [executor network restrictions](EXPERIMENTS.md#web-access) before evaluation.
 
+## Claude Code and Pi executors
+
+Both run on JobBench only. Pi runs on Vertex AI with the same Application Default
+Credentials and `GOOGLE_CLOUD_PROJECT`; Claude Code does too unless
+`HARNESS2_CLAUDE_AUTH` selects another route. Setup installs the pinned npm package
+under `dependencies/` (`config.CLAUDE_VERSION`, `config.PI_VERSION`):
+
+```bash
+harness2-setup jb --substrate cc        # or --substrate pi
+harness2-check --bench jb --substrate cc
+harness2 --bench jb --substrate cc --k 1 --mode parallel --max-tasks 1
+```
+
+| Setting | Executor | Purpose |
+|---|---|---|
+| `HARNESS2_CLAUDE_MODEL` | Claude Code | A Claude model ID for the chosen route, for example a Vertex AI ID or an Anthropic API alias; required |
+| `HARNESS2_CLAUDE_AUTH` | Claude Code | `vertex` (default), `api_key` or `oauth`; also used by the `claude_cli` proposer |
+| `HARNESS2_PROPOSER_CHANNEL` | Improver | `opencode` (default) or `claude_cli`; `claude_cli` takes a bare Anthropic ID in `HARNESS2_IMPROVER_MODEL`, defaulting to `HARNESS2_CLAUDE_MODEL` |
+| `HARNESS2_PI_MODEL` | Pi | Pi `provider/model` ID, for example `google-vertex/<model>`; defaults to `HARNESS2_SOLVER_MODEL` |
+
+With `HARNESS2_CLAUDE_AUTH=api_key`, set `ANTHROPIC_API_KEY`. With
+`HARNESS2_CLAUDE_AUTH=oauth`, set `CLAUDE_CODE_OAUTH_TOKEN` to the token printed by
+`claude setup-token`, which uses a Claude subscription; usage then counts against
+that subscription's limits. Only the credential the mode names is passed to a run.
+With `--substrate cc` and `HARNESS2_PROPOSER_CHANNEL=claude_cli`, no OpenCode model
+is used, so `HARNESS2_SOLVER_MODEL` is not required. Judging still uses the
+configured judge endpoint.
+
+Claude Code runs with permission checks bypassed, which it refuses as root: run
+it as a regular user. It is proprietary software installed from npm under
+Anthropic's terms; it is not distributed with Harness². Pi needs Node.js 22.19 or
+newer and has no permission checks or sandbox. Each attempt uses a fresh,
+empty configuration directory, so host settings and credentials for either tool
+are not used. Review the [executor network restrictions](EXPERIMENTS.md#web-access)
+before evaluation.
+
 ## Network access during setup
 
 Setup downloads dependencies from the following hosts:
@@ -147,7 +184,7 @@ Setup downloads dependencies from the following hosts:
 | Host | Used for |
 |---|---|
 | `github.com` | Pinned upstream checkouts |
-| `registry.npmjs.org` | Pinned Bun runtime and Codex CLI, plus dependencies resolved by `bun install` |
+| `registry.npmjs.org` | Pinned Bun runtime, Codex, Claude Code, and Pi CLIs, plus dependencies resolved by `bun install` |
 | `huggingface.co` and its CDN | JobBench data and WorkBuddy subset archives |
 | A Docker registry | WorkBuddy container image |
 | `astral.sh` | CPython 3.12 when the host has no system Python 3.12 |
