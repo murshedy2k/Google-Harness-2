@@ -30,7 +30,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import config
@@ -517,10 +517,21 @@ def _call_fingerprint(
     The resolved path is part of the key: the two modes can have byte-identical k=1 evidence
     and must still be independent draws.
     Channel settings isolate both cached replies and harvested harnesses across channel
-    configurations.
+    configurations. `timeout` is deliberately excluded: it decides whether a call finishes,
+    not what it says, so a reply that completed under one timeout is still valid under
+    another and keying on it would throw away every cached reply when the timeout is raised.
     """
     h = hashlib.sha256()
-    for value in (label, mission, system, json.dumps(asdict(spec), sort_keys=True)):
+    channel = json.dumps(
+        {
+            "kind": spec.kind,
+            "model": spec.model,
+            "effort": spec.effort,
+            "steps": spec.steps,
+        },
+        sort_keys=True,
+    )
+    for value in (label, mission, system, channel):
         h.update(value.encode("utf-8", errors="replace"))
         h.update(b"\0")
     if context_dir:

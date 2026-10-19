@@ -42,7 +42,6 @@ class ProposerCacheTests(unittest.TestCase):
             replace(self.spec, kind="claude_cli"),
             replace(self.spec, effort="low"),
             replace(self.spec, steps=10),
-            replace(self.spec, timeout=60),
         )
         for index, spec in enumerate(specs):
             with self.subTest(spec=spec):
@@ -66,6 +65,22 @@ class ProposerCacheTests(unittest.TestCase):
         call.assert_not_called()
         self.assertTrue(reply.cached)
         self.assertEqual(reply.text, "reply 0")
+
+    def test_timeout_only_change_reuses_cached_reply(self):
+        """A timeout decides whether a call finishes, not what it says: a reply that
+        completed under one timeout is still valid under another."""
+        proposer = Proposer(self.spec, audit_dir=self.audit)
+        with patch.object(proposer, "_opencode", return_value=("reply", 0.25, "")) as call:
+            reply = proposer.call("Edit the harness", self.context, "inv1.a1")
+        call.assert_called_once()
+        self.assertFalse(reply.cached)
+
+        proposer = Proposer(replace(self.spec, timeout=7200), audit_dir=self.audit)
+        with patch.object(proposer, "_opencode", return_value=("other", 0.25, "")) as call:
+            reply = proposer.call("Edit the harness", self.context, "inv1.a1")
+        call.assert_not_called()
+        self.assertTrue(reply.cached)
+        self.assertEqual(reply.text, "reply")
 
     def test_changed_model_does_not_reuse_harvested_harness(self):
         workspaces = []
