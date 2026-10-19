@@ -63,6 +63,7 @@ class Selection:
     experience: dict = field(default_factory=dict)
     trivial: bool = False
     evidence: str = "deliverable"
+    replayed_usd: float = 0.0
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -332,6 +333,7 @@ def run_selection(
     try:
         reply = prop.call(mission, root, f"select.{mode}{k}")
         sel.usd += reply.cost_usd
+        sel.replayed_usd += reply.replayed_usd
         m = _CHOICE.search(reply.text)
         if not m:
             raise ValueError("no ```choice block in the reply")
@@ -484,6 +486,7 @@ def _distil(
         sel.usd += exc.cost_usd
         return {}
     sel.usd += reply.cost_usd
+    sel.replayed_usd += reply.replayed_usd
     edits = _EDITS.search(reply.text)
     if edits:
         (root / "edits.md").write_text(edits.group(1).strip() + "\n", encoding="utf-8")

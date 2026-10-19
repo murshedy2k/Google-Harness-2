@@ -35,7 +35,10 @@ from .judge import _load_rows
 
 
 def _spend_and_fallbacks(ns_dir: Path, modes: tuple[str, ...], k: int) -> tuple[dict, dict]:
-    """(fell_back, usd) keyed (mode token, k), from the summaries the sweep checkpointed."""
+    """(fell_back, usd) keyed (mode token, k), from the summaries the sweep checkpointed.
+
+    usd includes the spend each summary replayed from the audit cache.
+    """
     fell_back: dict[tuple[str, int], int] = {}
     usd: dict[tuple[str, int], float] = {}
     for summary_path in sorted(ns_dir.glob("*/summary.json")):
@@ -50,9 +53,27 @@ def _spend_and_fallbacks(ns_dir: Path, modes: tuple[str, ...], k: int) -> tuple[
             rec = (records or {}).get(mode) or {}
             fell_back[key] = fell_back.get(key, 0) + len(rec.get("fell_back") or [])
             spend = sum(float(s.get("usd") or 0.0) for s in rec.get("stages") or [])
+            spend += sum(float(s.get("replayed_usd") or 0.0) for s in rec.get("stages") or [])
             sel = (summary.get("selections") or {}).get(mode) or {}
             usd[key] = usd.get(key, 0.0) + spend + float(sel.get("usd") or 0.0)
+            usd[key] += float(sel.get("replayed_usd") or 0.0)
     return fell_back, usd
+
+
+def _replayed_spend(ns_dir: Path, modes: tuple[str, ...], k: int) -> dict[tuple[str, int], float]:
+    """The part of each cell's spend that was replayed from the audit cache."""
+    replayed: dict[tuple[str, int], float] = {}
+    for summary_path in sorted(ns_dir.glob("*/summary.json")):
+        summary = SCHED._load_old(summary_path)
+        records = SCHED._modes_of(summary)
+        for mode in modes:
+            rec = (records or {}).get(mode) or {}
+            sel = (summary.get("selections") or {}).get(mode) or {}
+            stage_total = sum(float(s.get("replayed_usd") or 0.0) for s in rec.get("stages") or [])
+            replayed[(mode, k)] = (
+                replayed.get((mode, k), 0.0) + stage_total + float(sel.get("replayed_usd") or 0.0)
+            )
+    return replayed
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
 
     adapter = C.make_adapter(args.bench, args.subset, args.substrate)
     rows, fell_back, usd = [], {}, {}
+    replayed: dict[tuple[str, int], float] = {}
     for k in ks:
         ns_dir = C.runs_root_for(adapter) / C.summary_namespace(adapter, k, seed=args.seed)
         judged = ns_dir / "judged.json"
@@ -91,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         fb, sp = _spend_and_fallbacks(ns_dir, modes, k)
         fell_back.update(fb)
         usd.update(sp)
+        replayed.update(_replayed_spend(ns_dir, modes, k))
     if not rows:
         raise SystemExit("nothing to report")
 
@@ -106,6 +129,12 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\n  improver (editors, composer, selection, reflection) spend across reported modes: "
             f"${spend:.2f}"
+        )
+    replayed_spend = sum(replayed.get((s.mode, s.k), 0.0) for s in summaries)
+    if spend and replayed_spend:
+        print(
+            f"  of which ${replayed_spend:.2f} was replayed from the audit cache: paid when those "
+            f"sessions first ran, possibly in an earlier sweep"
         )
     return 0
 

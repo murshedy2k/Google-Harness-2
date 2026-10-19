@@ -53,6 +53,7 @@ class Stage:
     attempts: int = 0
     cached: bool = False
     notes: str = ""
+    replayed_usd: float = 0.0
 
 
 @dataclass
@@ -96,6 +97,7 @@ class ModeResult:
                     "cached": s.cached,
                     "notes": s.notes,
                     "error": (s.error or "")[:400],
+                    "replayed_usd": s.replayed_usd,
                 }
                 for s in self.stages
             ],
@@ -175,6 +177,7 @@ def _run_stage(
 
     err = ""
     spent_usd = 0.0
+    spent_replayed = 0.0
     spent_calls = 0
     all_cached = True
     for attempt in range(1, STAGE_ATTEMPTS + 1):
@@ -199,6 +202,7 @@ def _run_stage(
             all_cached = False
             break
         spent_usd += reply.cost_usd
+        spent_replayed += reply.replayed_usd
         spent_calls += 0 if reply.cached else max(1, reply.attempts)
         all_cached = all_cached and reply.cached
 
@@ -237,6 +241,7 @@ def _run_stage(
             attempts=spent_calls,
             cached=all_cached,
             notes=notes.group(1).strip() if notes else reply.text.strip(),
+            replayed_usd=spent_replayed,
         )
 
     return Stage(
@@ -248,13 +253,20 @@ def _run_stage(
         usd=spent_usd,
         attempts=spent_calls,
         cached=all_cached,
+        replayed_usd=spent_replayed,
     )
 
 
 def _record_sessions(ledger: Ledger, stages: Sequence[Stage]) -> None:
     """Record stages in stable order after their concurrent phase finishes."""
     for stage in stages:
-        ledger.session(stage.label, stage.usd, cached=stage.cached, attempts=stage.attempts)
+        ledger.session(
+            stage.label,
+            stage.usd,
+            cached=stage.cached,
+            attempts=stage.attempts,
+            replayed_usd=stage.replayed_usd,
+        )
 
 
 def _roll(

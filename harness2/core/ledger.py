@@ -44,6 +44,7 @@ class Entry:
     usd: float = 0.0
     cached: bool = False
     attempts: int = 1
+    replayed_usd: float = 0.0
 
 
 @dataclass
@@ -59,9 +60,17 @@ class Ledger:
         self.entries.append(Entry("rollout", label, usd, cached))
 
     def session(
-        self, label: str, usd: float = 0.0, *, cached: bool = False, attempts: int = 1
+        self,
+        label: str,
+        usd: float = 0.0,
+        *,
+        cached: bool = False,
+        attempts: int = 1,
+        replayed_usd: float = 0.0,
     ) -> None:
-        self.entries.append(Entry("session", label, usd, cached, attempts=attempts))
+        self.entries.append(
+            Entry("session", label, usd, cached, attempts=attempts, replayed_usd=replayed_usd)
+        )
 
     @property
     def R(self) -> int:
@@ -82,6 +91,10 @@ class Ledger:
     @property
     def session_usd(self) -> float:
         return round(sum(e.usd for e in self.entries if e.kind == "session"), 6)
+
+    @property
+    def replayed_usd(self) -> float:
+        return round(sum(e.replayed_usd for e in self.entries), 6)
 
     def labels(self, kind: str) -> list[str]:
         return [e.label for e in self.entries if e.kind == kind]
@@ -127,6 +140,7 @@ class Ledger:
             "usd": self.usd,
             "rollout_usd": self.rollout_usd,
             "session_usd": self.session_usd,
+            "replayed_usd": self.replayed_usd,
             "rollouts": self.labels("rollout"),
             "sessions": self.labels("session"),
         }

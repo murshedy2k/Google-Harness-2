@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -82,6 +83,7 @@ class Reply:
     error: str = ""
     audit: Path | None = None
     workspace: Path | None = None
+    replayed_usd: float = 0.0
 
     def __bool__(self) -> bool:
         return self.ok
@@ -357,6 +359,7 @@ class Proposer:
             channel=self.spec.kind,
             audit=p["response"],
             workspace=p["workspace"] if p["workspace"].is_dir() else None,
+            replayed_usd=_replayed_cost(p["meta"]),
         )
 
     def _write_audit(self, r: Reply, mission: str, system: str, cache_key: str = "") -> None:
@@ -385,6 +388,24 @@ class Proposer:
             encoding="utf-8",
         )
         r.audit = p["response"]
+
+
+def _replayed_cost(meta: Path) -> float:
+    """Cost recorded in meta.json when the cached response was produced, if trustworthy."""
+    try:
+        recorded = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0.0
+    if not isinstance(recorded, dict) or recorded.get("ok") is not True:
+        return 0.0
+    cost = recorded.get("cost_usd")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return 0.0
+    try:
+        value = float(cost)
+    except OverflowError:
+        return 0.0
+    return value if math.isfinite(value) and value >= 0 else 0.0
 
 
 def _drop_workspace(paths: dict[str, Path] | None) -> None:
