@@ -122,7 +122,7 @@ class CodexSubstrate:
         if config.CODEX_AUTH_MODE not in ("api", "chatgpt"):
             raise config.ConfigError("HARNESS2_CODEX_AUTH_MODE must be api or chatgpt")
         if config.CODEX_AUTH_MODE == "chatgpt":
-            executable = str(Path(config.CODEX_BIN).expanduser())
+            executable = os.path.expanduser(config.CODEX_BIN)
             found = shutil.which(executable)
             return str(Path(found).absolute()) if found else executable
         return str(Path(config.CODEX_DIST) / "codex")
