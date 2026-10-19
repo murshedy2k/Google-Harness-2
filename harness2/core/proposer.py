@@ -234,6 +234,8 @@ class Proposer:
             )
         except RuntimeError as exc:
             return "", 0.0, str(exc)
+        except subprocess.TimeoutExpired:
+            return "", 0.0, f"timeout after {wall}s"
         # The CLI does not report subscription USD spend; zero is an unreported cost here.
         return text, 0.0, "" if text.strip() else "Codex produced no final response"
 

@@ -36,7 +36,8 @@ def main(argv=None):
     p.add_argument("--substrate", choices=("oc", "cx"), default="oc")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
-    if args.substrate == "cx":
+    uses_codex = args.substrate == "cx" or config.DEFAULT_PROPOSER_CHANNEL == "codex_cli"
+    if uses_codex:
         try:
             CodexSubstrate().binary()
         except config.ConfigError as exc:
@@ -54,11 +55,11 @@ def main(argv=None):
     name = {"jb": "job-bench-eval", "lab": "harvey-labs", "wb": "workbuddy-bench"}[args.benchmark]
     try:
         need_opencode = args.substrate == "oc" or config.DEFAULT_PROPOSER_CHANNEL == "opencode"
-        if args.substrate == "cx" and config.CODEX_AUTH_MODE == "chatgpt":
+        if uses_codex and config.CODEX_AUTH_MODE == "chatgpt":
             install.codex(dry_run=dry)
         if not dry:
             required = ("git", "uv")
-            if need_opencode or (args.substrate == "cx" and config.CODEX_AUTH_MODE == "api"):
+            if need_opencode or (uses_codex and config.CODEX_AUTH_MODE == "api"):
                 required += ("npm",)
             for binary in required + (
                 ("docker", "curl") if args.benchmark == "wb" else ()
@@ -119,7 +120,7 @@ def main(argv=None):
                     cwd=repo,
                     dry_run=dry,
                 )
-        if args.substrate == "cx" and config.CODEX_AUTH_MODE != "chatgpt":
+        if uses_codex and config.CODEX_AUTH_MODE != "chatgpt":
             install.codex(dry_run=dry)
     except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         p.exit(1, f"setup failed: {exc}\n")

@@ -223,7 +223,8 @@ def _check_identity(adapter, args, namespace_dir: Path) -> None:
         "domains": sorted(_csv(args.only_domains)),
         "seed": args.seed,
     }
-    if args.substrate == "cx" and config.CODEX_AUTH_MODE != "api":
+    uses_codex = args.substrate == "cx" or config.DEFAULT_PROPOSER_CHANNEL == "codex_cli"
+    if uses_codex and config.CODEX_AUTH_MODE != "api":
         identity["codex_auth_mode"] = config.CODEX_AUTH_MODE
     if config.DEFAULT_PROPOSER_CHANNEL != "opencode":
         identity["improver_channel"] = config.DEFAULT_PROPOSER_CHANNEL

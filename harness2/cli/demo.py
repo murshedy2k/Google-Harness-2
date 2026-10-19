@@ -40,6 +40,9 @@ def main(argv=None) -> int:
     if args.k < 1:
         parser.error("--k must be positive")
     root = args.output.expanduser().resolve()
+    record = root / "codex-config.json"
+    if args.substrate == "oc" and record.exists():
+        parser.error("this is a Codex demo output directory; use a new --output for the offline demo")
     if args.substrate == "cx":
         if config.CODEX_AUTH_MODE != "chatgpt" or not config.SOLVER_MODEL_CX:
             parser.error("the Codex demo needs HARNESS2_CODEX_AUTH_MODE=chatgpt and HARNESS2_CODEX_MODEL")
@@ -52,7 +55,8 @@ def main(argv=None) -> int:
             "mode": args.mode,
             "max_tasks": args.max_tasks,
         }
-        record = root / "codex-config.json"
+        if not record.exists() and (root / "base").exists():
+            parser.error("this is an offline demo output directory; use a new --output for Codex")
         if record.is_file() and json.loads(record.read_text()) != identity:
             parser.error("this output directory belongs to another Codex demo; use a new --output")
         record.write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")

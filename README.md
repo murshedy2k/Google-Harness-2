@@ -168,8 +168,9 @@ reproducibility, and baseline comparisons.
 
 ## Web access
 
-Executor network access is unrestricted, and Codex runs with its sandbox
-disabled. Public benchmark rubrics may be accessible online. Before evaluation,
+Default executor network access is unrestricted, and API-mode Codex runs with
+its sandbox disabled. Saved-login Codex runs use workspace-write sandboxing.
+Public benchmark rubrics may be accessible online. Before evaluation,
 configure [network restrictions](docs/EXPERIMENTS.md#web-access) to prevent
 access to benchmark answers and grading criteria.
 

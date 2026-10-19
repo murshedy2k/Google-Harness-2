@@ -31,6 +31,8 @@ class NativeRunnerTests(unittest.TestCase):
             "    print('codex-cli fake'); sys.exit(0)\n"
             "if 'login' in sys.argv:\n"
             "    print('Logged in using ChatGPT'); sys.exit(0)\n"
+            "if '--output-last-message' in sys.argv:\n"
+            "    Path(sys.argv[sys.argv.index('--output-last-message') + 1]).write_text('done')\n"
             "workspace = Path.cwd()\n"
             "output = workspace / 'output'\n"
             "output.mkdir(exist_ok=True)\n"
@@ -94,6 +96,55 @@ class NativeRunnerTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in clone.call_args_list], ["harvey-labs"])
         self.assertFalse(any(call.args[0][0] == "npm" for call in run.call_args_list))
 
+    def test_api_setup_keeps_opencode_and_pinned_codex_installation(self):
+        with (
+            patch.object(config, "CODEX_AUTH_MODE", "api"),
+            patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "opencode"),
+            patch("harness2.install.clone") as clone,
+            patch("harness2.install.patch"), patch("harness2.install.overlays"),
+            patch("harness2.install.codex") as codex,
+            patch("harness2.install.run") as run,
+        ):
+            self.assertEqual(setup.main(["lab", "--substrate", "cx", "--dry-run"]), 0)
+        self.assertEqual([call.args[0] for call in clone.call_args_list], ["opencode", "harvey-labs"])
+        codex.assert_called_once_with(dry_run=True)
+        self.assertTrue(any(call.args[0][0] == "npm" for call in run.call_args_list))
+
+    def test_api_codex_improvement_is_installed_with_an_opencode_executor(self):
+        with (
+            patch.object(config, "CODEX_AUTH_MODE", "api"),
+            patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "codex_cli"),
+            patch("harness2.install.clone"), patch("harness2.install.patch"),
+            patch("harness2.install.overlays"), patch("harness2.install.run"),
+            patch("harness2.install.codex") as codex,
+        ):
+            self.assertEqual(setup.main(["lab", "--substrate", "oc", "--dry-run"]), 0)
+        codex.assert_called_once_with(dry_run=True)
+
+    def test_relative_cli_and_login_paths_survive_session_directory_changes(self):
+        from harness2.substrate.codex import CodexSubstrate
+
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            with (
+                patch.object(config, "CODEX_BIN", "./codex"),
+                patch.object(config, "CODEX_LOGIN_HOME", "login"),
+            ):
+                substrate = CodexSubstrate()
+                substrate.preflight()
+                result = substrate.run_session(
+                    "work", workspace, "test-model", self.root / "session", timeout=10,
+                )
+        finally:
+            os.chdir(previous)
+        self.assertEqual(result, "done")
+        artifact = json.loads((workspace / "output/result.json").read_text())
+        self.assertEqual(artifact["home"], str(self.home))
+        self.assertEqual(artifact["argv"][0], str(self.cli))
+
     def test_jobbench_shell_runner_uses_login_home_and_workspace_sandbox(self):
         task = self.root / "dataset/role/task1/task_folder"
         task.mkdir(parents=True)
@@ -121,7 +172,7 @@ class NativeRunnerTests(unittest.TestCase):
         self.assertFalse(artifact["api_key_present"])
         self.assertEqual(self.auth.read_text(), 'preserve this sentinel without reading it\n')
 
-    def test_lab_runner_does_not_replace_or_delete_saved_login_home(self):
+    def load_lab_runner(self, mode="chatgpt"):
         upstream = types.ModuleType("external.tts_lab.config")
         upstream.documents_dir = lambda task: self.root / "documents"
         upstream.task_json = lambda task: {"instructions": "Write output/result.json"}
@@ -134,25 +185,52 @@ class NativeRunnerTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("test_lab_codex_runner", path)
         runner = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, modules), patch.dict(os.environ, {
-            "HARNESS2_CODEX_AUTH_MODE": "chatgpt", "ADAPT_LABCX_CODEX_BIN": str(self.cli),
-            "CODEX_HOME": str(self.home),
+            "HARNESS2_CODEX_AUTH_MODE": mode, "ADAPT_LABCX_CODEX_BIN": str(self.cli),
         }):
             spec.loader.exec_module(runner)
-            args = runner.parser.parse_args([
-                "--task", "task", "--run-id", "test", "--model", "test-model",
-                "--timeout", "10", "--doc-parser", "host",
-            ])
-            with (
-                patch.object(runner, "SCRATCH_BASE", self.root / "scratch"),
-                patch.object(runner, "run_dir_for", return_value=self.root / "results/test"),
-                patch.object(runner, "install_harness", return_value=[]),
-                patch("signal.signal"),
-            ):
-                self.assertEqual(runner.main(args), 0)
-        artifact = json.loads((self.root / "results/test/output/result.json").read_text())
-        self.assertEqual(artifact["home"], str(self.home))
-        self.assertIn("workspace-write", artifact["argv"])
+        return runner
+
+    def test_lab_runner_keeps_account_home_and_api_scratch_home_separate(self):
+        for mode in ("chatgpt", "api"):
+            with self.subTest(mode=mode):
+                runner = self.load_lab_runner(mode)
+                output = self.root / "results" / mode
+                args = runner.parser.parse_args([
+                    "--task", "task", "--run-id", mode, "--model", "test-model",
+                    "--timeout", "10", "--doc-parser", "host",
+                ])
+                with (
+                    patch.dict(os.environ, {"CODEX_HOME": str(self.home)}),
+                    patch.object(runner, "SCRATCH_BASE", self.root / "scratch"),
+                    patch.object(runner, "run_dir_for", return_value=output),
+                    patch.object(runner, "install_harness", return_value=[]),
+                    patch("signal.signal"),
+                ):
+                    self.assertEqual(runner.main(args), 0)
+                artifact = json.loads((output / "output/result.json").read_text())
+                if mode == "chatgpt":
+                    self.assertEqual(artifact["home"], str(self.home))
+                    self.assertIn("workspace-write", artifact["argv"])
+                else:
+                    self.assertIn("codex_home", artifact["home"])
+                    self.assertFalse(Path(artifact["home"]).exists())
+                    self.assertIn("--dangerously-bypass-approvals-and-sandbox", artifact["argv"])
         self.assertEqual(self.auth.read_text(), 'preserve this sentinel without reading it\n')
+
+    def test_lab_reaper_preserves_authentication_inside_scratch(self):
+        runner = self.load_lab_runner()
+        scratch = self.root / "scratch"
+        saved = scratch / "codex_home/saved-login"
+        saved.mkdir(parents=True)
+        (saved / "auth.json").write_text("sentinel")
+        stale = scratch / "lab/stale"
+        stale.mkdir(parents=True)
+        with patch.object(runner, "SCRATCH_BASE", scratch), patch.dict(os.environ, {
+            "CODEX_HOME": str(saved), "HARNESS2_CODEX_HOME": str(saved),
+        }):
+            self.assertEqual(runner.reap(0), 1)
+        self.assertEqual((saved / "auth.json").read_text(), "sentinel")
+        self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":

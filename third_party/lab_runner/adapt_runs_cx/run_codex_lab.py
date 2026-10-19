@@ -77,6 +77,16 @@ def scratch_paths(label: str, pid: int | None = None) -> tuple[Path, Path, Path]
     return tmp_root, tmp_root / "ws", codex_home
 
 
+def overlaps_login_home(path: Path) -> bool:
+    """Account authentication is user-owned, even if it was placed under scratch."""
+    if AUTH_MODE != "chatgpt":
+        return False
+    home = Path(os.environ.get("HARNESS2_CODEX_HOME") or os.environ.get("CODEX_HOME")
+                or str(Path.home() / ".codex")).expanduser().resolve()
+    path = path.resolve()
+    return path == home or path in home.parents or home in path.parents
+
+
 def run_dir_for(run_id: str) -> Path:
     """<results_root>/<run_id>, with path escapes refused."""
     rid = str(run_id).strip()
@@ -211,7 +221,7 @@ def reap(hours: float) -> int:
             continue
         for d in sorted(base.iterdir()):
             try:
-                if d.is_dir() and d.stat().st_mtime < cutoff:
+                if d.is_dir() and d.stat().st_mtime < cutoff and not overlaps_login_home(d):
                     _require_scratch(d, "reap target")
                     shutil.rmtree(d, ignore_errors=True)
                     n += 1
@@ -234,6 +244,8 @@ def main(args) -> int:
     run_dir = run_dir_for(args.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     tmp_root, ws, codex_home = scratch_paths(label)
+    if any(overlaps_login_home(path) for path in (tmp_root, codex_home)):
+        raise SystemExit("saved Codex login overlaps rollout scratch; choose another ADAPT_LABCX_SCRATCH")
 
     def _die(signum, _frame):
         raise SystemExit(128 + signum)

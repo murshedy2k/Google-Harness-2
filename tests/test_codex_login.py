@@ -10,6 +10,9 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from harness2 import config, install
+from harness2.cli import demo as demo_cli
+from harness2.cli import judge as judge_cli
+from harness2.cli import run_sweep
 from harness2.core.proposer import Proposer, ProposerError
 from harness2.core.spec import ChannelSpec, resolve_channel_model
 from harness2.substrate.codex import CodexSubstrate
@@ -205,6 +208,66 @@ class CodexProposerTests(unittest.TestCase):
                 proposer = Proposer(ChannelSpec("codex_cli", model), audit_dir=self.root / "audit")
                 proposer.call("same task", None, "same-label")
         self.assertEqual(run.call_count, 2)
+
+    def test_timeout_preserves_partial_trajectory_before_temporary_cleanup(self):
+        proposer = self.make_proposer()
+        partial = b'{"type":"turn.started"}\n'
+        with (
+            patch("subprocess.run", side_effect=subprocess.TimeoutExpired(
+                "codex", 1, output=partial, stderr=b"waiting"
+            )),
+            self.assertRaisesRegex(ProposerError, "timeout"),
+        ):
+            proposer.call("work", None, "timeout", max_attempts=1)
+        trajectories = list((self.root / "audit").glob("*.response.jsonl"))
+        self.assertEqual(len(trajectories), 1)
+        self.assertEqual(trajectories[0].read_bytes(), partial)
+
+
+class CodexConfigurationTests(unittest.TestCase):
+    def test_judge_accepts_codex_models_without_an_opencode_solver_model(self):
+        with (
+            patch.object(config, "SOLVER_MODEL_OC", ""),
+            patch.object(config, "SOLVER_MODEL_CX", "test-model"),
+            patch.object(config, "IMPROVER_MODEL", "test-model"),
+            patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "codex_cli"),
+            patch.dict(config.PROPOSER_MODEL_BY_CHANNEL, {"codex_cli": "test-model"}),
+            patch.dict(os.environ, {"HARNESS2_JUDGE_MODEL": "test-judge"}),
+            patch("harness2.cli.judge.C.make_adapter", side_effect=RuntimeError("models accepted")),
+            self.assertRaisesRegex(RuntimeError, "models accepted"),
+        ):
+            judge_cli.main(["--bench", "lab", "--substrate", "cx"])
+
+    def test_auth_change_invalidates_an_opencode_run_with_codex_improvement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = run_sweep._build_parser().parse_args(["--bench", "lab", "--substrate", "oc"])
+            with (
+                patch.object(config, "DEFAULT_PROPOSER_CHANNEL", "codex_cli"),
+                patch.object(config, "CODEX_AUTH_MODE", "chatgpt"),
+                patch("harness2.cli.run_sweep._stream_for", return_value=({}, [])),
+            ):
+                run_sweep._check_identity(Mock(), args, root)
+                with patch.object(config, "CODEX_AUTH_MODE", "api"), self.assertRaises(ValueError):
+                    run_sweep._check_identity(Mock(), args, root)
+
+    def test_offline_and_live_demos_cannot_share_artifact_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record = root / "codex-config.json"
+            record.write_text("{}")
+            with self.assertRaises(SystemExit):
+                demo_cli.main(["--output", str(root)])
+            self.assertFalse((root / "base").exists())
+            record.unlink()
+            (root / "base").mkdir()
+            with (
+                patch.object(config, "CODEX_AUTH_MODE", "chatgpt"),
+                patch.object(config, "SOLVER_MODEL_CX", "test-model"),
+                self.assertRaises(SystemExit),
+            ):
+                demo_cli.main(["--output", str(root), "--substrate", "cx"])
+            self.assertFalse(record.exists())
 
 
 if __name__ == "__main__":

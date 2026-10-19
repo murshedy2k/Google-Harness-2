@@ -137,7 +137,7 @@ To use another Responses API endpoint, set `HARNESS2_CODEX_BASE_URL`,
 endpoint and model in `dependencies/codex/home/config.toml`; rerun setup after
 changing either. `harness2-check` reports stale configuration until then.
 
-Codex runs with its sandbox disabled. Review the
+In API mode, Codex runs with its sandbox disabled. Review the
 [executor network restrictions](EXPERIMENTS.md#web-access) before evaluation.
 
 ### Saved ChatGPT login for native runs

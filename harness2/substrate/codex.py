@@ -123,7 +123,8 @@ class CodexSubstrate:
             raise config.ConfigError("HARNESS2_CODEX_AUTH_MODE must be api or chatgpt")
         if config.CODEX_AUTH_MODE == "chatgpt":
             executable = str(Path(config.CODEX_BIN).expanduser())
-            return shutil.which(executable) or executable
+            found = shutil.which(executable)
+            return str(Path(found).absolute()) if found else executable
         return str(Path(config.CODEX_DIST) / "codex")
 
     def materialise(self, tree_dir: Path, spec, ctx: Mapping[str, str]) -> Install:
@@ -197,12 +198,16 @@ class CodexSubstrate:
         """
         env = dict(base_env)
         env.pop("OPENAI_BASE_URL", None)
-        self.binary()  # Validate the selected mode before constructing any process environment.
+        binary = self.binary()
         if config.CODEX_AUTH_MODE == "chatgpt":
             for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
                 env.pop(key, None)
-            if config.CODEX_LOGIN_HOME:
-                env["CODEX_HOME"] = str(Path(config.CODEX_LOGIN_HOME).expanduser())
+            home = config.CODEX_LOGIN_HOME or env.get("CODEX_HOME")
+            if home:
+                home = str(Path(home).expanduser().absolute())
+                env["CODEX_HOME"] = home
+                env["HARNESS2_CODEX_HOME"] = home
+            env["HARNESS2_CODEX_BIN"] = binary
             return env
         env["CODEX_HOME"] = str(codex_home)
         env["PATH"] = str(Path(config.CODEX_DIST) / "codex-path") + os.pathsep + env.get("PATH", "")
@@ -236,12 +241,22 @@ class CodexSubstrate:
         )
         if config.CODEX_AUTH_MODE == "api":
             env["VERTEX_PROXY_KEY"] = config.VERTEX_PROXY_KEY
-        result = subprocess.run(
-            argv, cwd=workspace, env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=timeout,
-        )
-        (output / "codex.jsonl").write_text(result.stdout, encoding="utf-8")
-        (output / "codex.stderr.log").write_text(result.stderr, encoding="utf-8")
+        result = None
+        try:
+            result = subprocess.run(
+                argv, cwd=workspace, env=env, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            result = exc
+            raise
+        finally:
+            if result is not None:
+                for name, value in (("codex.jsonl", result.stdout),
+                                    ("codex.stderr.log", result.stderr)):
+                    if isinstance(value, bytes):
+                        value = value.decode("utf-8", errors="replace")
+                    (output / name).write_text(value or "", encoding="utf-8")
         completed = False
         failures = []
         for line in result.stdout.splitlines():
