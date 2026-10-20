@@ -101,7 +101,8 @@ CLAUDE_SURFACE = SurfaceSpec(
 
 
 CLAUDE_ROOT_ENTRIES = ("CLAUDE.md", ".claude", "scripts")
-_HOST_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_", "CLAUDECODE")
+# HARNESS2_* carries the judge/codex/bridge keys; the agent never needs them.
+_HOST_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_", "CLAUDECODE", "HARNESS2_")
 
 
 class ClaudeSubstrate:

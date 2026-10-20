@@ -130,9 +130,12 @@ class PiSubstrate:
         ]
 
     def exec_env(self, base_env: Mapping[str, str], *, config_dir: Path) -> dict[str, str]:
-        """A throwaway agent dir, so the host's ~/.pi settings, keys and skills never leak."""
+        """A throwaway agent dir, so the host's ~/.pi settings, keys and skills never leak.
+
+        HARNESS2_* (judge/codex/bridge keys) is dropped; provider keys stay, pi may need them.
+        """
         return {
-            **base_env,
+            **{k: v for k, v in base_env.items() if not k.startswith("HARNESS2_")},
             "PI_CODING_AGENT_DIR": str(config_dir),
             "PI_SKIP_VERSION_CHECK": "1",
             "PI_TELEMETRY": "0",

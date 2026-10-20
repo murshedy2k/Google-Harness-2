@@ -96,10 +96,20 @@ class SubstrateTests(unittest.TestCase):
             PiSubstrate().materialise(self.root, SimpleNamespace(install_mode="codex_root"), {})
 
     def test_host_credentials_never_reach_a_run(self):
-        host = {"PATH": "/bin", "ANTHROPIC_API_KEY": "sk-host", "CLAUDE_CODE_USE_BEDROCK": "1"}
+        host = {
+            "PATH": "/bin",
+            "ANTHROPIC_API_KEY": "sk-host",
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "HARNESS2_JUDGE_API_KEY": "judge-secret",
+        }
         env = ClaudeSubstrate().exec_env(host, config_dir=self.root)
         self.assertNotIn("ANTHROPIC_API_KEY", env)
         self.assertNotIn("CLAUDE_CODE_USE_BEDROCK", env)
+        self.assertNotIn("HARNESS2_JUDGE_API_KEY", env)
+        self.assertEqual(env["PATH"], "/bin")
+        self.assertNotIn(
+            "HARNESS2_JUDGE_API_KEY", PiSubstrate().exec_env(host, config_dir=self.root)
+        )
         self.assertEqual(env["CLAUDE_CONFIG_DIR"], str(self.root))
         self.assertEqual(env["CLAUDE_CODE_USE_VERTEX"], "1")
         argv = PiSubstrate().exec_argv("task", self.root, "google-vertex/m")
