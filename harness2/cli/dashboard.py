@@ -24,6 +24,8 @@ Usage:
 
     harness2-dashboard --run runs/demo            # writes runs/demo/dashboard.html
     harness2-dashboard --run runs/demo --open     # also opens it in a browser
+    harness2-dashboard --compare runs/exp/k1 runs/exp/k2 runs/exp/k3
+                                                  # writes <parent>/dashboard_compare.html
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ import re
 import sys
 import webbrowser
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 from ._common import HelpFormatter
@@ -70,12 +73,22 @@ pre { background: #f2f4f6; border: 1px solid #dde1e6; border-radius: 8px;
 .badge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
          vertical-align: 1px; }
 .badge.ref { background: #1a7f37; color: #fff; }
+table { border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+th, td { border: 1px solid #d8dce1; padding: 5px 12px; text-align: right; }
+th { color: #5f6771; font-weight: 600; background: #eceff2; }
+th:first-child, td:first-child { text-align: left; }
+td.good { color: #116329; font-weight: 600; }
+td.weak { color: #a5211c; }
 @media (prefers-color-scheme: dark) {
   body { background: #16181b; color: #e4e7ea; }
   .card, .chip { background: #1e2126; border-color: #33383f; color: #d7dbdf; }
   .chip.base { background: #262a30; }
   pre { background: #101216; border-color: #2c3138; }
   h2 { border-color: #33383f; }
+  th { background: #262a30; border-color: #33383f; }
+  td { border-color: #33383f; }
+  td.good { color: #4dd287; }
+  td.weak { color: #ff8a84; }
 }
 """
 
@@ -324,21 +337,227 @@ def render(data: dict) -> str:
     return "\n".join(parts)
 
 
+def _norm_mode(mode_dir: str) -> str:
+    """Mode dirs embed the recursion budget (e.g. demo-oc-agg2 for k=2); strip the
+    trailing digits so the same mode lines up across compared runs."""
+    return re.sub(r"\d+$", "", mode_dir)
+
+
+def compare(roots: list[Path]) -> dict:
+    """Collect a cross-run comparison model: one row per run, plus a per-(mode,
+    task) matrix of reference and base totals so runs can be checked against
+    each other."""
+    rows = []
+    for root in roots:
+        data = collect(root)
+        row = {
+            "name": data["run_root"],
+            "summary": data["summary"],
+            "executions": sum(len(t["rollouts"]) for m in data["modes"] for t in m["tasks"]),
+            "entries": len(data["library"]),
+            "refs": {},
+        }
+        for mode in data["modes"]:
+            key = _norm_mode(mode["name"])
+            for task in mode["tasks"]:
+                base = next(
+                    (r["total"] for r in task["rollouts"] if r["name"].startswith("base")),
+                    None,
+                )
+                row["refs"][f"{key}/{task['name']}"] = {"ref": task["reference"], "base": base}
+        rows.append(row)
+    return {"runs": rows}
+
+
+def _spark_svg(
+    exec_points: list[tuple[str, int]],
+    editor_points: list[tuple[str, int | None]],
+) -> str:
+    """Deterministic inline SVG line chart (no JavaScript). Editor points without
+    a count (runs lacking a summary JSON) are simply not plotted."""
+    count = len(exec_points)
+    if count < 2:
+        return ""
+    width, height, pad = 660, 220, 44
+    plotted = [v for _, v in editor_points if v is not None] + [v for _, v in exec_points]
+    peak = max(plotted) or 1
+    span = height - 2 * pad
+
+    def x(i: int) -> int:
+        return round(pad + i * (width - 2 * pad) / (count - 1))
+
+    def y(value: int) -> int:
+        return round(height - pad - value / peak * span)
+
+    def chart_line(series: Sequence[tuple[str, int | None]], color: str, dashed: bool) -> str:
+        pts = [(x(i), y(v)) for i, (_, v) in enumerate(series) if v is not None]
+        vals = [v for _, v in series if v is not None]
+        coords = " ".join(f"{px},{py}" for px, py in pts)
+        dash = " stroke-dasharray='7 5'" if dashed else ""
+        dots = "".join(
+            f"<circle cx='{px}' cy='{py}' r='3.5' fill='{color}'><title>{v}</title></circle>"
+            for (px, py), v in zip(pts, vals)
+        )
+        return (
+            f"<polyline points='{coords}' fill='none' stroke='{color}' "
+            f"stroke-width='2.5'{dash}/>{dots}"
+        )
+
+    grid = []
+    for fraction in (1.0, 2 / 3, 1 / 3, 0.0):
+        gy = round(height - pad - fraction * span)
+        grid.append(
+            f"<line x1='{pad}' y1='{gy}' x2='{width - pad}' y2='{gy}' "
+            f"stroke='#d8dce1' stroke-width='1' stroke-dasharray='3 4'/>"
+        )
+        grid.append(
+            f"<text x='{pad - 8}' y='{gy + 4}' font-size='10' fill='#5f6771' "
+            f"text-anchor='end'>{round(peak * fraction)}</text>"
+        )
+    labels = [
+        f"<text x='{x(i)}' y='{height - pad + 18}' font-size='10' fill='#5f6771' "
+        f"text-anchor='middle'>{html.escape(name)}</text>"
+        for i, (name, _) in enumerate(exec_points)
+    ]
+    legend = (
+        f"<rect x='{pad}' y='{height - 6}' width='14' height='3' fill='#1a7f37'/>"
+        f"<text x='{pad + 20}' y='{height}' font-size='11' fill='#5f6771'>executions</text>"
+        f"<rect x='{pad + 110}' y='{height - 6}' width='14' height='3' fill='#c93c37'/>"
+        f"<text x='{pad + 130}' y='{height}' font-size='11' fill='#5f6771'>editor calls</text>"
+    )
+    return (
+        f"<svg width='{width}' height='{height}' viewBox='0 0 {width} {height}' "
+        f"role='img' aria-label='executions and editor calls per run'>"
+        + "".join(grid)
+        + chart_line(exec_points, "#1a7f37", False)
+        + chart_line(editor_points, "#c93c37", True)
+        + "".join(labels)
+        + legend
+        + "</svg>"
+    )
+
+
+def render_compare(data: dict) -> str:
+    """Render the comparison model into a complete, self-contained HTML page."""
+    runs = data["runs"]
+    parts = [
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+        "<title>harness2 run comparison</title><style>" + _STYLE + "</style></head><body><main>",
+        f"<h1>harness2 run comparison — {len(runs)} runs</h1>",
+        "<p class='sub'>Generated by <code>harness2-dashboard --compare</code> · "
+        "self-contained, no JavaScript.</p>",
+    ]
+    parts.append(
+        "<table><tr><th>run</th><th>tasks ok</th><th>executions</th>"
+        "<th>editor calls</th><th>library entries</th></tr>"
+    )
+    for row in runs:
+        summary = row["summary"]
+        tasks = (
+            f"{summary['done']}/{summary['done'] + summary['failed']}" if summary else "n/a"
+        )
+        editor = str(summary["editor_calls"]) if summary else "n/a"
+        parts.append(
+            f"<tr><td>{html.escape(row['name'])}</td><td>{html.escape(tasks)}</td>"
+            f"<td>{row['executions']}</td><td>{html.escape(editor)}</td>"
+            f"<td>{row['entries']}</td></tr>"
+        )
+    parts.append("</table>")
+
+    exec_points = [(row["name"], row["executions"]) for row in runs]
+    editor_points = [
+        (row["name"], row["summary"]["editor_calls"] if row["summary"] else None)
+        for row in runs
+    ]
+    chart = _spark_svg(exec_points, editor_points)
+    if chart:
+        parts.append(chart)
+
+    keys = sorted({key for row in runs for key in row["refs"]})
+    if keys:
+        parts.append("<h2>reference totals per mode/task</h2>")
+        parts.append("<table><tr><th>mode/task</th>"
+                     + "".join(f"<th>{html.escape(r['name'])}</th>" for r in runs)
+                     + "</tr>")
+        for key in keys:
+            cells = []
+            for row in runs:
+                cell = row["refs"].get(key)
+                if cell is None:
+                    cells.append("<td>—</td>")
+                    continue
+                ref = cell["ref"] if cell["ref"] is not None else "—"
+                base = (
+                    f" <span class='muted'>(base {html.escape(cell['base'])})</span>"
+                    if cell["base"] is not None
+                    else ""
+                )
+                cls = "good" if cell["ref"] is not None and cell["ref"] != cell["base"] else "weak"
+                cells.append(f"<td class='{cls}'>{html.escape(str(ref))}{base}</td>")
+            parts.append(f"<tr><td>{html.escape(key)}</td>{''.join(cells)}</tr>")
+        parts.append("</table>")
+        parts.append(
+            "<p class='muted'>reference = selection total, else the majority among "
+            "non-base rollouts; base totals (the unimproved harness) in parentheses.</p>"
+        )
+    parts.append("</main></body></html>")
+    return "\n".join(parts)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=HelpFormatter)
     parser.add_argument(
         "--run", type=Path, default=Path("runs/demo"), help="Run directory to visualize."
     )
     parser.add_argument(
+        "--compare",
+        type=Path,
+        nargs="+",
+        default=None,
+        metavar="RUN",
+        help="Compare two or more run directories side by side (overrides --run).",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Output HTML path (default: <run>/dashboard.html).",
+        help="Output HTML path (default: <run>/dashboard.html, or <first run's "
+        "parent>/dashboard_compare.html when comparing).",
     )
     parser.add_argument(
         "--open", action="store_true", help="Open the dashboard in the default browser."
     )
     args = parser.parse_args(argv)
+    if args.compare is not None:
+        roots = [path.expanduser().resolve() for path in args.compare]
+        if len(roots) < 2:
+            print("error: --compare needs at least two run directories", file=sys.stderr)
+            return 2
+        invalid = [str(root) for root in roots if not (root / "runs").is_dir()]
+        if invalid:
+            print(
+                "error: not run directories (missing runs/): " + ", ".join(invalid),
+                file=sys.stderr,
+            )
+            return 2
+        data = compare(roots)
+        if sum(row["executions"] for row in data["runs"]) == 0:
+            print("error: no executed tasks found in any of the compared runs",
+                  file=sys.stderr)
+            return 2
+        output = (
+            args.output or roots[0].parent / "dashboard_compare.html"
+        ).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(render_compare(data), encoding="utf-8")
+        print(
+            f"comparison: {output} "
+            f"({len(roots)} runs, {sum(r['executions'] for r in data['runs'])} executions)"
+        )
+        if args.open:
+            webbrowser.open(output.as_uri())
+        return 0
     run_root = args.run.expanduser().resolve()
     if not (run_root / "runs").is_dir():
         print(f"error: {run_root} does not look like a run directory (missing runs/)",
